@@ -1,0 +1,729 @@
+Stack Details — sistema_de_gestao_v1-1
+
+Project: Team Kanban TV Dashboard
+Repository: sistema_de_gestao_v1-1
+Generated: July 28, 2026
+
+
+
+Overview
+
+This is a single-page React application backed by Supabase (auth, database, storage, edge functions). There is no custom Node/Express server — the frontend talks directly to Supabase.
+
+
+
+Frontend
+
+
+
+
+
+
+
+Layer
+
+
+
+Technology
+
+
+
+
+
+Language
+
+
+
+TypeScript 5.5
+
+
+
+
+
+UI framework
+
+
+
+React 18
+
+
+
+
+
+Bundler / dev server
+
+
+
+Vite 5
+
+
+
+
+
+Styling
+
+
+
+Tailwind CSS 3 + PostCSS + Autoprefixer
+
+
+
+
+
+Icons
+
+
+
+Lucide React
+
+
+
+
+
+State
+
+
+
+React Context (AppContext, CalendarContext, ThemeContext, LanguageContext) + localStorage
+
+
+
+
+
+Routing
+
+
+
+No React Router — manual path check (/tv-dashboard)
+
+
+
+
+
+Drag & drop
+
+
+
+Custom hooks (useDragAndDrop, useListDragAndDrop)
+
+
+
+Key frontend dependencies
+
+
+
+
+
+react ^18.3.1
+
+
+
+react-dom ^18.3.1
+
+
+
+@supabase/supabase-js ^2.57.0
+
+
+
+lucide-react ^0.344.0
+
+
+
+Key dev dependencies
+
+
+
+
+
+vite ^5.4.2
+
+
+
+@vitejs/plugin-react ^4.3.1
+
+
+
+typescript ^5.5.3
+
+
+
+tailwindcss ^3.4.1
+
+
+
+eslint ^9.9.1
+
+
+
+terser ^5.24.0 (production minification)
+
+
+
+
+
+Backend / Data (Supabase)
+
+
+
+
+
+
+
+Layer
+
+
+
+Technology
+
+
+
+
+
+BaaS
+
+
+
+Supabase (@supabase/supabase-js v2)
+
+
+
+
+
+Database
+
+
+
+PostgreSQL (40+ SQL migrations in supabase/migrations/)
+
+
+
+
+
+Auth
+
+
+
+Supabase Auth (GoTrue)
+
+
+
+
+
+Security
+
+
+
+Row Level Security (RLS) policies
+
+
+
+
+
+Storage
+
+
+
+Supabase Storage (e.g. event attachments bucket)
+
+
+
+
+
+Server logic
+
+
+
+PostgreSQL RPCs + scheduled jobs (metrics, gamification, leaderboards)
+
+
+
+
+
+Edge function
+
+
+
+create-user — Deno runtime, admin-only user management
+
+
+
+Main domain areas in the database
+
+
+
+
+
+Projects, tasks, and lists
+
+
+
+Organizations (multi-tenant)
+
+
+
+Calendars and events
+
+
+
+Dev roadmap
+
+
+
+Invitations
+
+
+
+Dashboard preferences
+
+
+
+Metrics / KPIs
+
+
+
+Badges and gamification
+
+
+
+Required Supabase RPCs (metrics)
+
+
+
+
+
+record_user_action
+
+
+
+start_user_session
+
+
+
+end_user_session
+
+
+
+get_month_archive
+
+
+
+get_metrics_my_report
+
+
+
+get_metrics_org_view
+
+
+
+check_badge_eligibility
+
+
+
+metrics_get_weekly_challenge
+
+
+
+process_metrics_nightly
+
+
+
+
+
+Tooling & Quality
+
+
+
+
+
+
+
+Tool
+
+
+
+Purpose
+
+
+
+
+
+ESLint 9
+
+
+
+Linting (typescript-eslint, react-hooks, react-refresh)
+
+
+
+
+
+TypeScript
+
+
+
+Strict typing (tsconfig.app.json, tsconfig.node.json)
+
+
+
+
+
+Terser
+
+
+
+Production minification
+
+
+
+
+
+Supabase CLI
+
+
+
+Migrations (supabase db push)
+
+
+
+
+
+Environment & Deployment
+
+
+
+Required environment variables
+
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+
+If these are missing, the client falls back to local Supabase defaults (http://127.0.0.1:54321).
+
+Build output
+
+
+
+
+
+Output directory: dist/ (static SPA)
+
+
+
+Production minify: Terser
+
+
+
+Code splitting: vendor (react, react-dom), lucide (lucide-react)
+
+
+
+Deployment targets
+
+
+
+
+
+Vercel — configured via vercel.json (SPA rewrites to index.html)
+
+
+
+Netlify — build: npm run build, publish: dist
+
+
+
+GitHub Pages — via gh-pages
+
+
+
+Docker — node:18-alpine, exposes port 4173
+
+
+
+Server ports
+
+
+
+
+
+Dev server: 3000
+
+
+
+Preview server: 4173
+
+
+
+
+
+Architecture
+
+┌─────────────────┐
+│   React SPA     │
+│   (Vite + TS)   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│    Supabase     │
+├─────────────────┤
+│ • Auth (GoTrue) │
+│ • PostgreSQL    │
+│ • RLS policies  │
+│ • Storage       │
+│ • Edge Functions│
+│   (Deno)        │
+└─────────────────┘
+
+
+
+
+
+Application features
+
+
+
+
+
+Personal and project Kanban boards
+
+
+
+TV dashboard mode (full-screen, read-only display)
+
+
+
+Real-time collaboration via Supabase
+
+
+
+Development roadmap with idea sharing
+
+
+
+Multi-language support (English and Portuguese Brazil)
+
+
+
+Dark / light mode
+
+
+
+Drag and drop task and list management
+
+
+
+Zoom and pan controls for TV dashboard
+
+
+
+Calendar and event management
+
+
+
+Admin panel and user invitations
+
+
+
+Metrics, KPIs, and gamification (badges, leaderboards)
+
+
+
+
+
+Project structure (high level)
+
+sistema_de_gestao_v1-1/
+├── src/
+│   ├── components/     # React UI components
+│   ├── contexts/       # React Context providers
+│   ├── hooks/          # Custom hooks (auth, drag & drop)
+│   ├── lib/            # Supabase client, metrics client
+│   ├── types/          # TypeScript types
+│   └── utils/          # Helper utilities
+├── supabase/
+│   ├── migrations/     # PostgreSQL schema migrations
+│   └── functions/      # Deno edge functions
+├── docs/               # Documentation
+├── package.json
+├── vite.config.ts
+├── tailwind.config.js
+└── vercel.json
+
+
+
+
+
+NPM scripts
+
+
+
+
+
+
+
+Script
+
+
+
+Command
+
+
+
+Description
+
+
+
+
+
+dev
+
+
+
+vite
+
+
+
+Start development server (port 3000)
+
+
+
+
+
+build
+
+
+
+vite build
+
+
+
+Production build
+
+
+
+
+
+build:production
+
+
+
+vite build --mode production
+
+
+
+Production mode build
+
+
+
+
+
+preview
+
+
+
+vite preview
+
+
+
+Preview production build
+
+
+
+
+
+start
+
+
+
+vite preview --port 4173 --host
+
+
+
+Serve built app
+
+
+
+
+
+lint
+
+
+
+eslint .
+
+
+
+Run ESLint
+
+
+
+
+
+Quick start
+
+# Prerequisites: Node.js 18+
+npm install
+npm run dev      # http://localhost:3000
+npm run build    # production build → dist/
+npm run preview  # preview on :4173
+
+
+
+Supabase setup
+
+supabase link --project-ref <your-project-ref>
+supabase db push
+
+
+
+
+
+Notable absences
+
+This project intentionally keeps the stack lean:
+
+
+
+
+
+No React Router, Redux, Zustand, React Query, or Axios
+
+
+
+No Python / Node backend of its own
+
+
+
+No Docker / CI config committed (only documented examples)
+
+
+
+No test framework configured in package.json
+
+
+
+
+
+Browser support
+
+
+
+
+
+Chrome 90+
+
+
+
+Firefox 88+
+
+
+
+Safari 14+
+
+
+
+Edge 90+
+
+
+
+Document generated from repository analysis.

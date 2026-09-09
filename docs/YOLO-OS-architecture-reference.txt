@@ -1,0 +1,100 @@
+What it is
+YOLO OS is the operational and commercial layer for Elephant & Castle Bebidas Ltda (YOLOPOPS). It is a production-shaped Next.js 14 App Router web app: auth, Postgres + RLS, storage, PWA/offline field forms, Web Push, cron jobs, Sentry, Vercel deploy. Fiscal work stays in Bling; the app only stores a manual “transferred” flag and NF number — no Bling API.
+
+Languages and runtime
+Layer	Stack
+App
+TypeScript (strict), React 18, Next.js 14.2 App Router
+Styling
+Tailwind CSS 3 + globals.css component classes; no shadcn/ui, no CSS modules
+Validation
+Zod
+Dates
+date-fns
+Charts
+Recharts
+Icons
+lucide-react
+Tests
+Vitest on domain logic (src/lib/domain)
+Path alias
+@/* → src/*
+Scripts: npm run dev / build / start / lint / typecheck / test. Mutations are Server Actions ('use server' in actions.ts), not a large REST surface. APIs: /api/visitas (offline replay), /api/push/subscribe, /api/cron/diario.
+
+CSS, tokens, UI classes
+Dark mode: class on <html> via ThemeProvider. Theme is per user (users.theme_preference) with localStorage cache.
+
+Brand tokens (tailwind.config.ts):
+
+yolo-50 … yolo-950 (green; primary #2fa84f)
+status-verde / status-amarelo / status-vermelho
+touch spacing / minHeight = 3rem (warehouse + gloves)
+Global component classes (src/app/globals.css): .card, .label, .field, .btn, .btn-primary, .btn-secondary, .btn-danger, .btn-ghost, .table-wrap, .table. Print: .no-print, .print-page.
+
+Shared React UI (src/components/ui.tsx): PageHeader, Card, Stat, EmptyState, status badges. Class merging: cn() = clsx + tailwind-merge (src/lib/utils.ts).
+
+Layout: sidebar + top bar on desktop; mobile bottom nav (max 5 primary items per role). html lang="pt-BR". Touch-sized inputs (text-base on form controls).
+
+Convention: Tailwind utilities on JSX + the CSS classes above. Do not introduce a second design system.
+
+App structure
+src/app/(app)/     authenticated shell (TopBar, Sidebar, BottomNav)
+  dashboard        admin
+  pedidos          orders + approval gate + status chain
+  fulfillment      picking, dispatch, print
+  estoque          receiving, FIFO transfer, movement ledger
+  clientes         CRM + health score
+  comercial        weekly agenda, visits, pipeline
+  eventos          check-in / check-out / P&L
+  financeiro       receivables, aging, deposit, Bling flag
+  configuracoes    SKUs/prices, locations, forms, rules, users, TV tokens
+  equipamentos, calendario, ocorrencias, notificacoes
+src/app/login, /offline, /sem-permissao, /tv   (TV is token kiosk, no login)
+src/app/api/       visitas, push, cron
+src/lib/domain     testable rules: stock FIFO, orders, health
+src/lib/supabase   server (RLS session) / browser (Realtime) / admin (service role)
+src/lib/auth.ts    requireUser / requireRole / canSeeMoney
+src/lib/labels.ts  enum → PT-BR labels (single source)
+src/types/index.ts hand-written domain types (mirrors SQL)
+supabase/migrations  0001–0009: schema, views, RLS, storage, seed defaults
+Roles (UserRole): admin | comercial | operacoes | financeiro | tv. Homes: dashboard / comercial agenda / fulfillment / financeiro / TV.
+
+Middleware: cookie session via @supabase/ssr. Public: /login, /offline, /tv, /api/tv, /api/cron. Everyone else redirected to login.
+
+Database (what makes it a connected app)
+Supabase: Postgres, Auth, RLS, Realtime, Storage. Region intended: sa-east-1.
+
+Env (required to run as a real app):
+
+NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY — browser + server (RLS)
+SUPABASE_SERVICE_ROLE_KEY — server only (cron, notifications, TV after token check)
+Optional: VAPID push, Sentry, NEXT_PUBLIC_APP_URL, CRON_SECRET
+Clients:
+
+createSupabaseServerClient() — default for user data (RLS)
+createSupabaseBrowserClient() — Realtime, offline flush
+createSupabaseAdminClient() — bypasses RLS; server-only
+Core tables: users, skus, sku_prices, warehouses, locations, lots, stock_movements, receivings, clients, equipment, orders, order_items, events, visits, consignment_balances, pipeline, tasks, occurrences, notifications, push_subscriptions, form_field_definitions, system_settings, tv_tokens, audit_log.
+
+Money is hidden in the DB, not only in the UI. REVOKE SELECT on R$ columns of orders / order_items; money comes back via views orders_full / order_items_full for admin | comercial | financeiro. select('*') on orders fails — list columns.
+
+Stock ledger is append-only. No update/delete on stock_movements. Balances from view stock_balances. FIFO is a suggestion; override needs a written reason.
+
+Storage: private photo buckets, 5 MB, RLS policies.
+
+Seed: npm run seed:users (Admin API, not SQL into auth.users). Operational defaults in 0005_defaults.sql. Demo supabase/seed.sql — not for production.
+
+Patterns to keep when prompting
+Mutations: Server Action in colocated actions.ts → { ok, message, warnings?, redirectTo? } → wrap forms in ActionForm.
+Auth on every action: requireUser() / requireRole(...).
+Labels: add enum in src/types/index.ts + PT-BR in src/lib/labels.ts.
+Nav: src/lib/nav.ts (roles + primary for mobile).
+Settings: admin-editable system_settings; no deploy for business rules.
+Configurable forms: hide/rename/add fields on existing sections; answers in JSON by field_key. Not a form builder.
+Offline: append-only queue (idb-keyval); failed replay goes to pending sync — never silent drop.
+TV: SHA-256 hashed device tokens; 20s polling, not Realtime.
+Observability: Sentry optional (no DSN = inert). Cron: Vercel 0 10 * * * → /api/cron/diario (health, weekly agenda Mondays, checkout/stock/no-contact alerts).
+PWA: public/manifest.webmanifest + public/sw.js.
+Tests: Vitest for FIFO, balances, status chain, health, price gate. SQL smoke: supabase/tests/rls_test.sql. Access matrix: docs/RLS_MATRIX.md.
+
+Use this as the system context: Next 14 + TS + Tailwind (.card/.field/.btn-* + yolo-*/status-*) + Supabase RLS session client + Server Actions + role-gated PT-BR UI. New features should follow those files and constraints, not add a parallel stack.
