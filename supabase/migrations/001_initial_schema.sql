@@ -13,7 +13,7 @@ CREATE EXTENSION IF NOT EXISTS "btree_gist";
 CREATE TABLE locations (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL UNIQUE,
-  type TEXT NOT NULL CHECK (type IN ('receiving', 'storage', 'freezer', 'shipping', 'other')),
+  type TEXT NOT NULL, -- User-defined location types (no constraint)
   is_active BOOLEAN NOT NULL DEFAULT true,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -26,13 +26,31 @@ CREATE TABLE products (
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   flavor TEXT, -- NULL for non-pop products
+  description TEXT, -- Product description
   kind TEXT NOT NULL CHECK (kind IN ('pop', 'material', 'equipment_service')),
   unit TEXT NOT NULL DEFAULT 'un',
   category TEXT, -- for materials: 'Embalagem', 'Material de envio', 'Insumo', etc.
+  product_line TEXT, -- Caipi, Drinks, Cremoso, etc.
+  format TEXT, -- congelado, liquido, etc. (for inventory rollups)
+  base_quantity INTEGER NOT NULL DEFAULT 1, -- Base unit quantity
+  is_composite BOOLEAN NOT NULL DEFAULT false, -- Whether product is made of other products
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Product composition / BOM (Bill of Materials)
+CREATE TABLE product_components (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  parent_product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  child_product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(parent_product_id, child_product_id)
+);
+
+CREATE INDEX idx_product_components_parent ON product_components(parent_product_id);
+CREATE INDEX idx_product_components_child ON product_components(child_product_id);
 
 -- Physical asset types
 CREATE TYPE asset_type AS ENUM (
@@ -599,6 +617,7 @@ ALTER TABLE order_attachments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE equipment_reservations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE separation_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE classification_references ENABLE ROW LEVEL SECURITY;
+ALTER TABLE product_components ENABLE ROW LEVEL SECURITY;
 
 -- Policies for authenticated users (permissive for now)
 CREATE POLICY "Allow all for authenticated" ON locations FOR ALL TO authenticated USING (true) WITH CHECK (true);
@@ -619,6 +638,7 @@ CREATE POLICY "Allow all for authenticated" ON order_attachments FOR ALL TO auth
 CREATE POLICY "Allow all for authenticated" ON equipment_reservations FOR ALL TO authenticated USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all for authenticated" ON separation_jobs FOR ALL TO authenticated USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all for authenticated" ON classification_references FOR ALL TO authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for authenticated" ON product_components FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 -- ============================================================================
 -- SEED DATA

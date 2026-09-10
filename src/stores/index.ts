@@ -450,6 +450,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     return [];
   },
 
+  getAllProductComponents: async () => {
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase
+        .from('product_components')
+        .select('*');
+      if (error) throw new Error(error.message);
+      return data || [];
+    }
+    return [];
+  },
+
   createAsset: async (data) => {
     const now = new Date().toISOString();
     const newAsset: Asset = {

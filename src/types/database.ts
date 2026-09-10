@@ -97,6 +97,7 @@ export interface Product {
   unit: string;
   category: string | null;
   product_line: string | null;
+  format: string | null;
   base_quantity: number;
   is_composite: boolean;
   is_active: boolean;

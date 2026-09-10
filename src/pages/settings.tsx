@@ -5,11 +5,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/ui/data-table";
 import { CreatableSelect, type SelectOption } from "@/components/ui/creatable-select";
 import { useAppStore } from "@/stores";
-import { Plus, Pencil, Trash2, MapPin, Package, Box, Warehouse, IceCream, Layers, Thermometer } from "lucide-react";
+import { Plus, Pencil, Trash2, Copy, MapPin, Package, Box, Warehouse, IceCream, Layers, Thermometer, Snowflake, Droplets } from "lucide-react";
 import type { Location, Product, Asset } from "@/types/database";
 
 const defaultLocationTypes: SelectOption[] = [
@@ -41,6 +42,11 @@ const defaultProductLines: SelectOption[] = [
   { value: "frutas", label: "Frutas" },
 ];
 
+const defaultFormats: SelectOption[] = [
+  { value: "congelado", label: "Congelado" },
+  { value: "liquido", label: "Líquido" },
+];
+
 const defaultPackagingTypes: SelectOption[] = [
   { value: "individual", label: "Individual (1 un)" },
   { value: "cartucho_6", label: "Cartucho (6 un)" },
@@ -57,6 +63,94 @@ interface ComponentItem {
   quantity: number;
 }
 
+// Component to show product composition in a popover
+function CompositionPopover({ 
+  product, 
+  allProducts,
+  productLines,
+  materialTypes 
+}: { 
+  product: Product; 
+  allProducts: Product[];
+  productLines: SelectOption[];
+  materialTypes: SelectOption[];
+}) {
+  const [components, setComponents] = useState<ComponentItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const loadComponents = async () => {
+    if (components.length > 0) return;
+    setLoading(true);
+    const { getProductComponents } = useAppStore.getState();
+    const comps = await getProductComponents(product.id);
+    setComponents(comps);
+    setLoading(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          onClick={() => {
+            setOpen(true);
+            loadComponents();
+          }}
+          className="inline-flex"
+        >
+          <Badge variant="secondary" className="text-xs font-normal cursor-pointer hover:bg-secondary/80">
+            <Layers className="w-3 h-3 mr-1" />
+            Composto
+          </Badge>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 p-0" align="start">
+        <div className="p-3 border-b bg-muted/30">
+          <p className="font-medium text-sm">{product.code} - {product.name}</p>
+          <p className="text-xs text-muted-foreground">Composição do produto</p>
+        </div>
+        <div className="p-2 max-h-80 overflow-y-auto">
+          {loading ? (
+            <p className="text-sm text-muted-foreground text-center py-4">Carregando...</p>
+          ) : components.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">Nenhum componente cadastrado</p>
+          ) : (
+            <div className="space-y-1">
+              {components.map((comp) => {
+                const compProduct = allProducts.find(p => p.id === comp.product_id);
+                if (!compProduct) return null;
+                const isMaterial = compProduct.kind === "material";
+                const isCongelado = compProduct.format === "congelado";
+                const isLiquido = compProduct.format === "liquido";
+                return (
+                  <div key={comp.product_id} className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-muted/50">
+                    <div className="flex items-center gap-2">
+                      {isMaterial ? (
+                        <span className="text-sm">📦</span>
+                      ) : isCongelado ? (
+                        <Snowflake className="w-3.5 h-3.5 text-sky-500" />
+                      ) : isLiquido ? (
+                        <Droplets className="w-3.5 h-3.5 text-fuchsia-500" />
+                      ) : null}
+                      <div>
+                        <p className="text-sm font-medium">{compProduct.code}</p>
+                        <p className="text-xs text-muted-foreground">{compProduct.name}</p>
+                      </div>
+                    </div>
+                    <Badge variant="outline" className="text-xs">
+                      {comp.quantity} un
+                    </Badge>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function SettingsPage() {
   const { locations, products, assets, fetchLocations, fetchProducts, fetchAssets } = useAppStore();
   
@@ -64,6 +158,7 @@ export function SettingsPage() {
   const [materialTypes, setMaterialTypes] = useState<SelectOption[]>(defaultMaterialTypes);
   const [boxTypes, setBoxTypes] = useState<SelectOption[]>(defaultBoxTypes);
   const [productLines, setProductLines] = useState<SelectOption[]>(defaultProductLines);
+  const [formats, setFormats] = useState<SelectOption[]>(defaultFormats);
   const [packagingTypes, setPackagingTypes] = useState<SelectOption[]>(defaultPackagingTypes);
 
   const [locationDialog, setLocationDialog] = useState<{
@@ -105,6 +200,7 @@ export function SettingsPage() {
     unit: "un",
     category: "embalagem",
     product_line: "caipi",
+    format: "congelado",
     base_quantity: 1,
     is_composite: false,
     components: [] as ComponentItem[],
@@ -116,10 +212,59 @@ export function SettingsPage() {
     type: "caixa_media",
   });
 
+  // Component selector state
+  const [componentSelector, setComponentSelector] = useState({ productId: "", quantity: 1 });
+
+  // All product components for recursive calculation
+  const [allComponents, setAllComponents] = useState<{ parent_product_id: string; child_product_id: string; quantity: number }[]>([]);
+
+  const loadAllComponents = async () => {
+    const { getAllProductComponents } = useAppStore.getState();
+    const comps = await getAllProductComponents();
+    setAllComponents(comps);
+  };
+
+  // Recursive function to calculate total base units for a product
+  // For simple products: returns base_quantity (usually 1)
+  // For composite products: sums (child_qty × child's total base units)
+  const calculateTotalBaseUnits = (productId: string, visited: Set<string> = new Set()): number => {
+    // Prevent infinite loops from circular references
+    if (visited.has(productId)) return 0;
+    visited.add(productId);
+
+    const product = products.find(p => p.id === productId);
+    if (!product) return 0;
+
+    // Get components for this product
+    const productComponents = allComponents.filter(c => c.parent_product_id === productId);
+
+    // If no components (simple product), return base_quantity
+    if (productComponents.length === 0) {
+      return product.base_quantity || 1;
+    }
+
+    // For composite products, sum up all children's contributions
+    let total = 0;
+    for (const comp of productComponents) {
+      const childProduct = products.find(p => p.id === comp.child_product_id);
+      if (childProduct) {
+        // Only count SKUs (pops), not materials
+        if (childProduct.kind === "pop") {
+          const childBaseUnits = calculateTotalBaseUnits(comp.child_product_id, new Set(visited));
+          total += comp.quantity * childBaseUnits;
+        }
+        // Materials don't contribute to base unit count
+      }
+    }
+
+    return total > 0 ? total : (product.base_quantity || 1);
+  };
+
   useEffect(() => {
     fetchLocations();
     fetchProducts();
     fetchAssets();
+    loadAllComponents();
   }, []);
 
   const handleCreateLocationType = (label: string) => {
@@ -190,6 +335,23 @@ export function SettingsPage() {
     setProductLines(productLines.filter((t) => t.value !== value));
   };
 
+  const handleCreateFormat = (label: string) => {
+    const id = label.toLowerCase().replace(/\s+/g, "_");
+    if (!formats.find((t) => t.value === id)) {
+      setFormats([...formats, { value: id, label }]);
+    }
+  };
+
+  const handleEditFormat = (value: string, newLabel: string) => {
+    setFormats(formats.map((t) =>
+      t.value === value ? { ...t, label: newLabel } : t
+    ));
+  };
+
+  const handleDeleteFormat = (value: string) => {
+    setFormats(formats.filter((t) => t.value !== value));
+  };
+
   const handleCreatePackagingType = (label: string) => {
     const id = label.toLowerCase().replace(/\s+/g, "_");
     if (!packagingTypes.find((t) => t.value === id)) {
@@ -231,72 +393,128 @@ export function SettingsPage() {
   const handleProductSubmit = async () => {
     const { createProduct, updateProduct, saveProductComponents } = useAppStore.getState();
     
-    let productId: string | undefined;
-    
+    // Validate code before saving
     if (productDialog.mode === "create") {
-      const newProduct = await createProduct({
-        code: productFormData.code,
-        name: productFormData.name,
-        flavor: productDialog.kind === "pop" ? productFormData.flavor : undefined,
-        description: productDialog.kind === "pop" ? productFormData.description : undefined,
-        kind: productDialog.kind,
-        unit: productFormData.unit,
-        category: productDialog.kind === "material" ? productFormData.category : undefined,
-        product_line: productDialog.kind === "pop" ? productFormData.product_line : undefined,
-        base_quantity: productFormData.base_quantity,
-        is_composite: productFormData.components.length > 0,
-        is_active: true,
-      });
-      productId = newProduct?.id;
-    } else if (productDialog.item) {
-      await updateProduct(productDialog.item.id, {
-        code: productFormData.code,
-        name: productFormData.name,
-        flavor: productDialog.kind === "pop" ? productFormData.flavor : undefined,
-        description: productDialog.kind === "pop" ? productFormData.description : undefined,
-        unit: productFormData.unit,
-        category: productDialog.kind === "material" ? productFormData.category : undefined,
-        product_line: productDialog.kind === "pop" ? productFormData.product_line : undefined,
-        base_quantity: productFormData.base_quantity,
-        is_composite: productFormData.components.length > 0,
-      });
-      productId = productDialog.item.id;
+      const isTaken = productDialog.kind === "pop" 
+        ? isSkuCodeTaken(productFormData.code)
+        : isMaterialCodeTaken(productFormData.code);
+      const suggested = productDialog.kind === "pop" ? suggestedSkuCode : suggestedMaterialCode;
+      
+      if (isTaken) {
+        alert(`O código "${productFormData.code}" já existe. Use um código diferente.\n\nSugestão: ${suggested}`);
+        return;
+      }
     }
     
-    // Save components for SKU products
-    if (productId && productDialog.kind === "pop") {
-      await saveProductComponents(productId, productFormData.components);
+    try {
+      let productId: string | undefined;
+      
+      // Auto-add any pending component selection before saving
+      let components = [...(productFormData.components || [])];
+      if (componentSelector.productId && productFormData.is_composite) {
+        const exists = components.find(c => c.product_id === componentSelector.productId);
+        if (!exists) {
+          components.push({ product_id: componentSelector.productId, quantity: componentSelector.quantity });
+        }
+      }
+      
+      
+      if (productDialog.mode === "create") {
+        const newProduct = await createProduct({
+          code: productFormData.code,
+          name: productFormData.name,
+          flavor: productDialog.kind === "pop" ? productFormData.flavor : undefined,
+          description: productDialog.kind === "pop" ? productFormData.description : undefined,
+          kind: productDialog.kind,
+          unit: productFormData.unit,
+          category: productDialog.kind === "material" ? productFormData.category : undefined,
+          product_line: productDialog.kind === "pop" ? productFormData.product_line : undefined,
+          format: productDialog.kind === "pop" ? productFormData.format : undefined,
+          base_quantity: productFormData.base_quantity,
+          is_composite: components.length > 0,
+          is_active: true,
+        });
+        productId = newProduct?.id;
+      } else if (productDialog.item) {
+        await updateProduct(productDialog.item.id, {
+          code: productFormData.code,
+          name: productFormData.name,
+          flavor: productDialog.kind === "pop" ? productFormData.flavor : undefined,
+          description: productDialog.kind === "pop" ? productFormData.description : undefined,
+          unit: productFormData.unit,
+          category: productDialog.kind === "material" ? productFormData.category : undefined,
+          product_line: productDialog.kind === "pop" ? productFormData.product_line : undefined,
+          format: productDialog.kind === "pop" ? productFormData.format : undefined,
+          base_quantity: productFormData.base_quantity,
+          is_composite: components.length > 0,
+        });
+        productId = productDialog.item.id;
+      }
+      
+      // Save components for SKU products
+      if (productId && productDialog.kind === "pop" && components.length > 0) {
+        await saveProductComponents(productId, components);
+      }
+      
+      // Reload all components to update calculated base quantities
+      await loadAllComponents();
+      
+      setProductDialog({ open: false, mode: "create", kind: "pop" });
+      setProductFormData({ 
+        code: "", name: "", flavor: "", description: "", unit: "un", 
+        category: "embalagem", product_line: "caipi", format: "congelado", base_quantity: 1,
+        is_composite: false, components: []
+      });
+      setComponentSelector({ productId: "", quantity: 1 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao salvar produto";
+      if (message.includes("duplicate key") || message.includes("unique constraint")) {
+        alert(`Erro: O código "${productFormData.code}" já existe. Use um código diferente.`);
+      } else {
+        alert(`Erro ao salvar: ${message}`);
+      }
     }
-    
-    setProductDialog({ open: false, mode: "create", kind: "pop" });
-    setProductFormData({ 
-      code: "", name: "", flavor: "", description: "", unit: "un", 
-      category: "embalagem", product_line: "caipi", base_quantity: 1,
-      is_composite: false, components: []
-    });
   };
 
   const handleAssetSubmit = async () => {
     const { createAsset, updateAsset } = useAppStore.getState();
     
+    // Validate code before saving
     if (assetDialog.mode === "create") {
-      await createAsset({
-        code: assetFormData.code,
-        name: assetFormData.name,
-        type: assetFormData.type as Asset["type"],
-        status: "available",
-        is_active: true,
-      });
-    } else if (assetDialog.item) {
-      await updateAsset(assetDialog.item.id, {
-        code: assetFormData.code,
-        name: assetFormData.name,
-        type: assetFormData.type as Asset["type"],
-      });
+      const isTaken = assetDialog.assetType === "box" 
+        ? isBoxCodeTaken(assetFormData.code)
+        : isEquipmentCodeTaken(assetFormData.code);
+      const suggested = assetDialog.assetType === "box" ? suggestedBoxCode : suggestedEquipmentCode;
+      
+      if (isTaken) {
+        alert(`O código "${assetFormData.code}" já existe. Use um código diferente.\n\nSugestão: ${suggested}`);
+        return;
+      }
     }
     
-    setAssetDialog({ open: false, mode: "create", assetType: "box" });
-    setAssetFormData({ code: "", name: "", type: "caixa_media" });
+    try {
+      if (assetDialog.mode === "create") {
+        await createAsset({
+          code: assetFormData.code,
+          name: assetFormData.name,
+          type: assetFormData.type as Asset["type"],
+          status: "available",
+          is_active: true,
+        });
+      } else if (assetDialog.item) {
+        await updateAsset(assetDialog.item.id, {
+          code: assetFormData.code,
+          name: assetFormData.name,
+          type: assetFormData.type as Asset["type"],
+        });
+      }
+      
+      setAssetDialog({ open: false, mode: "create", assetType: "box" });
+      setAssetFormData({ code: "", name: "", type: "caixa_media" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao salvar";
+      alert(`Erro ao salvar: ${message}`);
+    }
   };
 
   const openEditLocation = (item: Location) => {
@@ -321,10 +539,12 @@ export function SettingsPage() {
       unit: item.unit,
       category: item.category || "embalagem",
       product_line: item.product_line || "caipi",
+      format: item.format || "congelado",
       base_quantity: item.base_quantity || 1,
       is_composite: item.is_composite || false,
       components,
     });
+    setComponentSelector({ productId: "", quantity: 1 });
     setProductDialog({ open: true, mode: "edit", kind, item });
   };
 
@@ -352,9 +572,37 @@ export function SettingsPage() {
   };
 
   const popProducts = products.filter((p) => p.kind === "pop");
+  const simpleProducts = popProducts.filter((p) => !p.is_composite);
+  const compositeProducts = popProducts.filter((p) => p.is_composite);
   const materialProducts = products.filter((p) => p.kind === "material");
   const boxAssets = assets.filter((a) => a.type === "caixa_media" || a.type === "caixa_preta");
   const equipmentAssets = assets.filter((a) => a.type === "freezer" || a.type === "carrinho");
+
+  // Helper to generate next sequential code
+  const getNextCode = (prefix: string, existingCodes: string[]): string => {
+    const pattern = new RegExp(`^${prefix}-(\\d+)$`, "i");
+    let maxNum = 0;
+    existingCodes.forEach(code => {
+      const match = code.match(pattern);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    });
+    return `${prefix}-${String(maxNum + 1).padStart(3, "0")}`;
+  };
+
+  // Suggested codes for each type
+  const suggestedSkuCode = getNextCode("YOL", popProducts.map(p => p.code));
+  const suggestedMaterialCode = getNextCode("MAT", materialProducts.map(p => p.code));
+  const suggestedBoxCode = getNextCode("CX", boxAssets.map(a => a.code));
+  const suggestedEquipmentCode = getNextCode("EQ", equipmentAssets.map(a => a.code));
+
+  // Check if code exists
+  const isSkuCodeTaken = (code: string) => popProducts.some(p => p.code.toLowerCase() === code.toLowerCase());
+  const isMaterialCodeTaken = (code: string) => materialProducts.some(p => p.code.toLowerCase() === code.toLowerCase());
+  const isBoxCodeTaken = (code: string) => boxAssets.some(a => a.code.toLowerCase() === code.toLowerCase());
+  const isEquipmentCodeTaken = (code: string) => equipmentAssets.some(a => a.code.toLowerCase() === code.toLowerCase());
 
   return (
     <div className="space-y-6">
@@ -462,14 +710,31 @@ export function SettingsPage() {
                       size="icon"
                       className="h-7 w-7"
                       onClick={() => openEditLocation(item)}
+                      title="Editar"
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="h-7 w-7"
+                      onClick={() => {
+                        setFormData({
+                          name: item.name + " (cópia)",
+                          type: item.type
+                        });
+                        setLocationDialog({ open: true, mode: "create" });
+                      }}
+                      title="Duplicar"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       className="h-7 w-7 text-destructive hover:text-destructive"
                       onClick={() => setDeleteDialog({ open: true, type: "location", item })}
+                      title="Excluir"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
@@ -482,13 +747,18 @@ export function SettingsPage() {
 
         {/* SKUs TAB */}
         <TabsContent value="skus" className="space-y-4">
+          {/* Simple SKUs Table */}
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-base font-medium">SKUs de Produto</CardTitle>
+                  <CardTitle className="text-base font-medium flex items-center gap-2">
+                    <Package className="w-4 h-4" />
+                    SKUs Simples
+                    <Badge variant="secondary" className="text-xs font-normal ml-2">{simpleProducts.length}</Badge>
+                  </CardTitle>
                   <CardDescription className="text-xs">
-                    Produtos YOLO Pop disponíveis para venda - configure a árvore de produtos
+                    Produtos base individuais - picolés, drinks e unidades avulsas
                   </CardDescription>
                 </div>
                 <Button
@@ -497,31 +767,71 @@ export function SettingsPage() {
                   onClick={() => {
                     setProductFormData({ 
                       code: "", name: "", flavor: "", description: "", unit: "un", 
-                      category: "embalagem", product_line: "caipi", base_quantity: 1,
+                      category: "embalagem", product_line: "caipi", format: "congelado", base_quantity: 1,
                       is_composite: false, components: []
                     });
+                    setComponentSelector({ productId: "", quantity: 1 });
                     setProductDialog({ open: true, mode: "create", kind: "pop" });
                   }}
                 >
                   <Plus className="w-3.5 h-3.5 mr-1" />
-                  Novo SKU
+                  Novo SKU Simples
                 </Button>
               </div>
             </CardHeader>
             <CardContent className="pt-0">
               <DataTable
-                data={popProducts}
+                data={simpleProducts}
                 searchKey="name"
-                searchPlaceholder="Buscar SKU..."
-                emptyMessage="Nenhum SKU cadastrado."
+                searchPlaceholder="Buscar SKU simples..."
+                emptyMessage="Nenhum SKU simples cadastrado."
+                maxHeight="300px"
                 columns={[
+                  {
+                    key: "name",
+                    header: "Produto",
+                    render: (item) => (
+                      <div>
+                        <span className="font-medium">{item.name}</span>
+                        {item.description && (
+                          <span className="text-xs text-muted-foreground ml-2">{item.description}</span>
+                        )}
+                      </div>
+                    ),
+                  },
                   {
                     key: "code",
                     header: "SKU",
-                    width: "w-28",
+                    width: "w-32",
                     render: (item) => (
                       <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{item.code}</code>
                     ),
+                  },
+                  {
+                    key: "format",
+                    header: "Formato",
+                    width: "w-28",
+                    render: (item) => {
+                      const format = item.format || "";
+                      const isCongelado = format === "congelado";
+                      const isLiquido = format === "liquido";
+                      return (
+                        <Badge 
+                          variant="secondary" 
+                          className={`text-xs font-normal ${
+                            isCongelado 
+                              ? "bg-sky-100 text-sky-700 hover:bg-sky-100" 
+                              : isLiquido 
+                              ? "bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-100"
+                              : ""
+                          }`}
+                        >
+                          {isCongelado && <Snowflake className="w-3 h-3 mr-1" />}
+                          {isLiquido && <Droplets className="w-3 h-3 mr-1" />}
+                          {getTypeLabel(formats, format)}
+                        </Badge>
+                      );
+                    },
                   },
                   {
                     key: "product_line",
@@ -534,33 +844,11 @@ export function SettingsPage() {
                     ),
                   },
                   {
-                    key: "flavor",
-                    header: "Produto",
-                    render: (item) => (
-                      <div>
-                        <span className="font-medium">{item.name}</span>
-                        {item.description && (
-                          <span className="text-xs text-muted-foreground ml-2">{item.description}</span>
-                        )}
-                      </div>
-                    ),
-                  },
-                  {
                     key: "base_quantity",
                     header: "Qtd Base",
                     width: "w-20",
                     render: (item) => (
                       <span className="text-xs">{item.base_quantity || 1} un</span>
-                    ),
-                  },
-                  {
-                    key: "is_composite",
-                    header: "Tipo",
-                    width: "w-24",
-                    render: (item) => (
-                      <Badge variant={item.is_composite ? "secondary" : "outline"} className="text-xs font-normal">
-                        {item.is_composite ? "Composto" : "Simples"}
-                      </Badge>
                     ),
                   },
                   {
@@ -581,14 +869,218 @@ export function SettingsPage() {
                       size="icon"
                       className="h-7 w-7"
                       onClick={() => openEditProduct(item, "pop")}
+                      title="Editar"
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="h-7 w-7"
+                      onClick={() => {
+                        setProductFormData({
+                          code: item.code + "-COPIA",
+                          name: item.name,
+                          flavor: item.flavor || "",
+                          description: item.description || "",
+                          unit: item.unit || "un",
+                          category: "",
+                          product_line: item.product_line || "",
+                          format: item.format || "congelado",
+                          base_quantity: item.base_quantity || 1,
+                          is_composite: false,
+                          components: []
+                        });
+                        setComponentSelector({ productId: "", quantity: 1 });
+                        setProductDialog({ open: true, mode: "create", kind: "pop" });
+                      }}
+                      title="Duplicar"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       className="h-7 w-7 text-destructive hover:text-destructive"
                       onClick={() => setDeleteDialog({ open: true, type: "product", item })}
+                      title="Excluir"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                )}
+              />
+            </CardContent>
+          </Card>
+
+          {/* Composite SKUs Table */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base font-medium flex items-center gap-2">
+                    <Layers className="w-4 h-4" />
+                    SKUs Compostos
+                    <Badge variant="secondary" className="text-xs font-normal ml-2">{compositeProducts.length}</Badge>
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    Kits, cartuchos e combos - produtos formados por outros SKUs e materiais
+                  </CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => {
+                    setProductFormData({ 
+                      code: "", name: "", flavor: "", description: "", unit: "un", 
+                      category: "embalagem", product_line: "caipi", format: "congelado", base_quantity: 1,
+                      is_composite: true, components: []
+                    });
+                    setComponentSelector({ productId: "", quantity: 1 });
+                    setProductDialog({ open: true, mode: "create", kind: "pop" });
+                  }}
+                >
+                  <Plus className="w-3.5 h-3.5 mr-1" />
+                  Novo SKU Composto
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <DataTable
+                data={compositeProducts}
+                searchKey="name"
+                searchPlaceholder="Buscar SKU composto..."
+                emptyMessage="Nenhum SKU composto cadastrado."
+                maxHeight="300px"
+                columns={[
+                  {
+                    key: "name",
+                    header: "Produto",
+                    render: (item) => (
+                      <div>
+                        <span className="font-medium">{item.name}</span>
+                        {item.description && (
+                          <span className="text-xs text-muted-foreground ml-2">{item.description}</span>
+                        )}
+                      </div>
+                    ),
+                  },
+                  {
+                    key: "code",
+                    header: "SKU",
+                    width: "w-32",
+                    render: (item) => (
+                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{item.code}</code>
+                    ),
+                  },
+                  {
+                    key: "format",
+                    header: "Formato",
+                    width: "w-28",
+                    render: (item) => {
+                      const format = item.format || "";
+                      const isCongelado = format === "congelado";
+                      const isLiquido = format === "liquido";
+                      return (
+                        <Badge 
+                          variant="secondary" 
+                          className={`text-xs font-normal ${
+                            isCongelado 
+                              ? "bg-sky-100 text-sky-700 hover:bg-sky-100" 
+                              : isLiquido 
+                              ? "bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-100"
+                              : ""
+                          }`}
+                        >
+                          {isCongelado && <Snowflake className="w-3 h-3 mr-1" />}
+                          {isLiquido && <Droplets className="w-3 h-3 mr-1" />}
+                          {getTypeLabel(formats, format)}
+                        </Badge>
+                      );
+                    },
+                  },
+                  {
+                    key: "product_line",
+                    header: "Linha",
+                    width: "w-24",
+                    render: (item) => (
+                      <Badge variant="outline" className="text-xs font-normal">
+                        {getTypeLabel(productLines, item.product_line || "")}
+                      </Badge>
+                    ),
+                  },
+                  {
+                    key: "base_quantity",
+                    header: "Qtd Base",
+                    width: "w-24",
+                    render: (item) => {
+                      const calculated = calculateTotalBaseUnits(item.id);
+                      return (
+                        <span className="text-xs font-medium">{calculated.toLocaleString()} un</span>
+                      );
+                    },
+                  },
+                  {
+                    key: "composition",
+                    header: "Composição",
+                    width: "w-28",
+                    render: (item) => (
+                      <CompositionPopover product={item} allProducts={products} productLines={productLines} materialTypes={materialTypes} />
+                    ),
+                  },
+                  {
+                    key: "is_active",
+                    header: "Status",
+                    width: "w-20",
+                    render: (item) => (
+                      <Badge variant={item.is_active ? "default" : "outline"} className="text-xs font-normal">
+                        {item.is_active ? "Ativo" : "Inativo"}
+                      </Badge>
+                    ),
+                  },
+                ]}
+                actions={(item) => (
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => openEditProduct(item, "pop")}
+                      title="Editar"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => {
+                        setProductFormData({
+                          code: item.code + "-COPIA",
+                          name: item.name,
+                          flavor: item.flavor || "",
+                          description: item.description || "",
+                          unit: item.unit || "un",
+                          category: "",
+                          product_line: item.product_line || "",
+                          format: item.format || "congelado",
+                          base_quantity: item.base_quantity || 1,
+                          is_composite: true,
+                          components: []
+                        });
+                        setComponentSelector({ productId: "", quantity: 1 });
+                        setProductDialog({ open: true, mode: "create", kind: "pop" });
+                      }}
+                      title="Duplicar"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-destructive hover:text-destructive"
+                      onClick={() => setDeleteDialog({ open: true, type: "product", item })}
+                      title="Excluir"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
@@ -614,7 +1106,11 @@ export function SettingsPage() {
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => {
-                    setProductFormData({ code: "", name: "", flavor: "", unit: "un", category: "embalagem" });
+                    setProductFormData({ 
+                      code: "", name: "", flavor: "", description: "", unit: "un", 
+                      category: "embalagem", product_line: "", format: "", base_quantity: 1,
+                      is_composite: false, components: []
+                    });
                     setProductDialog({ open: true, mode: "create", kind: "material" });
                   }}
                 >
@@ -631,17 +1127,17 @@ export function SettingsPage() {
                 emptyMessage="Nenhum material cadastrado."
                 columns={[
                   {
+                    key: "name",
+                    header: "Nome",
+                    render: (item) => <span className="font-medium">{item.name}</span>,
+                  },
+                  {
                     key: "code",
                     header: "Código",
                     width: "w-28",
                     render: (item) => (
                       <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{item.code}</code>
                     ),
-                  },
-                  {
-                    key: "name",
-                    header: "Nome",
-                    render: (item) => <span className="font-medium">{item.name}</span>,
                   },
                   {
                     key: "category",
@@ -651,6 +1147,14 @@ export function SettingsPage() {
                       <Badge variant="secondary" className="text-xs font-normal">
                         {getTypeLabel(materialTypes, item.category || "outro")}
                       </Badge>
+                    ),
+                  },
+                  {
+                    key: "description",
+                    header: "Descrição",
+                    width: "w-40",
+                    render: (item) => (
+                      <span className="text-xs text-muted-foreground">{item.description || "-"}</span>
                     ),
                   },
                   {
@@ -666,14 +1170,40 @@ export function SettingsPage() {
                       size="icon"
                       className="h-7 w-7"
                       onClick={() => openEditProduct(item, "material")}
+                      title="Editar"
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="h-7 w-7"
+                      onClick={() => {
+                        setProductFormData({
+                          code: item.code + "-COPIA",
+                          name: item.name,
+                          flavor: "",
+                          description: "",
+                          unit: item.unit || "un",
+                          category: item.category || "embalagem",
+                          product_line: "",
+                          format: "",
+                          base_quantity: 1,
+                          is_composite: false,
+                          components: []
+                        });
+                        setProductDialog({ open: true, mode: "create", kind: "material" });
+                      }}
+                      title="Duplicar"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       className="h-7 w-7 text-destructive hover:text-destructive"
                       onClick={() => setDeleteDialog({ open: true, type: "product", item })}
+                      title="Excluir"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
@@ -818,14 +1348,32 @@ export function SettingsPage() {
                       size="icon"
                       className="h-7 w-7"
                       onClick={() => openEditAsset(item, "box")}
+                      title="Editar"
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="h-7 w-7"
+                      onClick={() => {
+                        setAssetFormData({
+                          code: item.code + "-COPIA",
+                          name: item.name,
+                          type: item.type
+                        });
+                        setAssetDialog({ open: true, mode: "create", assetType: "box" });
+                      }}
+                      title="Duplicar"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       className="h-7 w-7 text-destructive hover:text-destructive"
                       onClick={() => setDeleteDialog({ open: true, type: "asset", item })}
+                      title="Excluir"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
@@ -901,14 +1449,37 @@ export function SettingsPage() {
                 ]}
                 actions={(item) => (
                   <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="icon" className="h-7 w-7">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => openEditAsset(item, "equipment")}
+                      title="Editar"
+                    >
                       <Pencil className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => {
+                        setAssetFormData({
+                          code: item.code + "-COPIA",
+                          name: item.name,
+                          type: item.type
+                        });
+                        setAssetDialog({ open: true, mode: "create", assetType: "equipment" });
+                      }}
+                      title="Duplicar"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7 text-destructive hover:text-destructive"
                       onClick={() => setDeleteDialog({ open: true, type: "asset", item })}
+                      title="Excluir"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
@@ -971,8 +1542,8 @@ export function SettingsPage() {
 
       {/* Product Dialog */}
       <Dialog open={productDialog.open} onOpenChange={(open) => setProductDialog({ ...productDialog, open })}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
+        <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle className="text-lg">
               {productDialog.mode === "create"
                 ? productDialog.kind === "pop"
@@ -983,18 +1554,56 @@ export function SettingsPage() {
                 : "Editar Material"}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-4">
+          <div className="space-y-4 py-4 overflow-y-auto flex-1 min-h-0">
             {productDialog.kind === "pop" && (
               <>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="pname" className="text-sm">Nome do Produto</Label>
+                  <Input
+                    id="pname"
+                    value={productFormData.name}
+                    onChange={(e) => setProductFormData({ ...productFormData, name: e.target.value })}
+                    placeholder="Ex: YOLO Pop · Manga"
+                    className="h-9"
+                  />
+                </div>
+                <div className="grid grid-cols-3 gap-3">
                   <div className="space-y-2">
                     <Label htmlFor="code" className="text-sm">Número SKU</Label>
-                    <Input
-                      id="code"
-                      value={productFormData.code}
-                      onChange={(e) => setProductFormData({ ...productFormData, code: e.target.value })}
-                      placeholder="Ex: YOL-005"
-                      className="h-9"
+                    <div className="relative">
+                      <Input
+                        id="code"
+                        value={productFormData.code}
+                        onChange={(e) => setProductFormData({ ...productFormData, code: e.target.value.toUpperCase() })}
+                        placeholder={suggestedSkuCode}
+                        className={`h-9 pr-8 ${productDialog.mode === "create" && productFormData.code && isSkuCodeTaken(productFormData.code) ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                      />
+                      {productDialog.mode === "create" && !productFormData.code && (
+                        <button
+                          type="button"
+                          onClick={() => setProductFormData({ ...productFormData, code: suggestedSkuCode })}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-primary hover:underline"
+                          title="Usar código sugerido"
+                        >
+                          Usar
+                        </button>
+                      )}
+                    </div>
+                    {productDialog.mode === "create" && productFormData.code && isSkuCodeTaken(productFormData.code) && (
+                      <p className="text-xs text-red-500">Código já existe. Sugestão: {suggestedSkuCode}</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm">Formato</Label>
+                    <CreatableSelect
+                      value={productFormData.format}
+                      onChange={(value) => setProductFormData({ ...productFormData, format: value })}
+                      options={formats}
+                      onCreateOption={handleCreateFormat}
+                      onEditOption={handleEditFormat}
+                      onDeleteOption={handleDeleteFormat}
+                      placeholder="Selecione..."
+                      createPlaceholder="Novo formato..."
                     />
                   </div>
                   <div className="space-y-2">
@@ -1010,16 +1619,6 @@ export function SettingsPage() {
                       createPlaceholder="Nova linha..."
                     />
                   </div>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="pname" className="text-sm">Nome do Produto</Label>
-                  <Input
-                    id="pname"
-                    value={productFormData.name}
-                    onChange={(e) => setProductFormData({ ...productFormData, name: e.target.value })}
-                    placeholder="Ex: YOLO Pop · Manga"
-                    className="h-9"
-                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="flavor" className="text-sm">Sabor</Label>
@@ -1042,6 +1641,23 @@ export function SettingsPage() {
                   />
                 </div>
                 <div className="border-t pt-4 mt-4">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={productFormData.is_composite}
+                      onChange={(e) => setProductFormData({ 
+                        ...productFormData, 
+                        is_composite: e.target.checked,
+                        components: e.target.checked ? productFormData.components : []
+                      })}
+                      className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                    />
+                    <span className="text-sm font-medium">Produto composto</span>
+                    <span className="text-xs text-muted-foreground">(kit, cartucho, combo)</span>
+                  </label>
+                </div>
+                {productFormData.is_composite && (
+                <div className="border rounded-md p-4 mt-3 bg-muted/20 overflow-hidden">
                   <Label className="text-sm font-medium">Composição (Árvore de Produto)</Label>
                   <p className="text-xs text-muted-foreground mb-3">
                     Adicione SKUs e materiais que compõem este produto
@@ -1050,56 +1666,73 @@ export function SettingsPage() {
                   {/* Component selector */}
                   <div className="flex gap-2 mb-3">
                     <select
-                      id="component-select"
-                      className="flex-1 h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      defaultValue=""
+                      value={componentSelector.productId}
+                      onChange={(e) => setComponentSelector({ ...componentSelector, productId: e.target.value })}
+                      className="flex-1 min-w-0 h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <option value="" disabled>Selecione um componente...</option>
-                      <optgroup label="SKUs">
-                        {popProducts
+                      <optgroup label="SKUs Simples">
+                        {simpleProducts
                           .filter(p => p.id !== productDialog.item?.id)
-                          .map(p => (
-                            <option key={p.id} value={p.id}>
-                              {p.code} - {p.name} ({p.base_quantity || 1} un)
-                            </option>
-                          ))}
+                          .map(p => {
+                            const formatIcon = p.format === "congelado" ? "❄️" : p.format === "liquido" ? "💧" : "";
+                            const linha = p.product_line ? getTypeLabel(productLines, p.product_line) : "";
+                            return (
+                              <option key={p.id} value={p.id}>
+                                {formatIcon} {p.code} - {p.name} • {linha} ({p.base_quantity || 1} un)
+                              </option>
+                            );
+                          })}
+                      </optgroup>
+                      <optgroup label="SKUs Compostos">
+                        {compositeProducts
+                          .filter(p => p.id !== productDialog.item?.id)
+                          .map(p => {
+                            const formatIcon = p.format === "congelado" ? "❄️" : p.format === "liquido" ? "💧" : "";
+                            const linha = p.product_line ? getTypeLabel(productLines, p.product_line) : "";
+                            const calcUnits = calculateTotalBaseUnits(p.id);
+                            return (
+                              <option key={p.id} value={p.id}>
+                                {formatIcon} {p.code} - {p.name} • {linha} ({calcUnits} un)
+                              </option>
+                            );
+                          })}
                       </optgroup>
                       <optgroup label="Materiais">
                         {materialProducts.map(p => (
                           <option key={p.id} value={p.id}>
-                            {p.code} - {p.name}
+                            📦 {p.code} - {p.name} • {getTypeLabel(materialTypes, p.category || "")}
                           </option>
                         ))}
                       </optgroup>
                     </select>
                     <Input
-                      id="component-qty"
                       type="number"
                       min="1"
-                      defaultValue="1"
+                      value={componentSelector.quantity}
+                      onChange={(e) => setComponentSelector({ ...componentSelector, quantity: parseInt(e.target.value) || 1 })}
                       placeholder="Qtd"
-                      className="w-20 h-9"
+                      className="w-20 h-9 flex-shrink-0"
                     />
                     <Button
                       type="button"
                       size="sm"
-                      className="h-9"
+                      className="h-9 flex-shrink-0"
                       onClick={() => {
-                        const select = document.getElementById("component-select") as HTMLSelectElement;
-                        const qtyInput = document.getElementById("component-qty") as HTMLInputElement;
-                        if (select.value && qtyInput.value) {
-                          const exists = productFormData.components.find(c => c.product_id === select.value);
+                        if (componentSelector.productId) {
+                          const exists = productFormData.components.find(c => c.product_id === componentSelector.productId);
                           if (!exists) {
-                            setProductFormData({
-                              ...productFormData,
+                            setProductFormData(prev => ({
+                              ...prev,
                               is_composite: true,
                               components: [
-                                ...productFormData.components,
-                                { product_id: select.value, quantity: parseInt(qtyInput.value) || 1 }
+                                ...prev.components,
+                                { product_id: componentSelector.productId, quantity: componentSelector.quantity }
                               ]
-                            });
-                            select.value = "";
-                            qtyInput.value = "1";
+                            }));
+                            setComponentSelector({ productId: "", quantity: 1 });
+                          } else {
+                            alert("Este componente já foi adicionado.");
                           }
                         }
                       }}
@@ -1110,30 +1743,51 @@ export function SettingsPage() {
 
                   {/* Components list */}
                   {productFormData.components.length > 0 && (
-                    <div className="border rounded-md divide-y mb-3">
+                    <div className="border rounded-md divide-y mb-3 overflow-hidden">
                       {productFormData.components.map((comp, idx) => {
                         const product = products.find(p => p.id === comp.product_id);
                         if (!product) return null;
                         const isMaterial = product.kind === "material";
+                        const isCongelado = product.format === "congelado";
+                        const isLiquido = product.format === "liquido";
                         return (
-                          <div key={comp.product_id} className="flex items-center justify-between px-3 py-2 text-sm">
-                            <div className="flex items-center gap-2">
-                              <Badge variant={isMaterial ? "secondary" : "outline"} className="text-xs">
-                                {isMaterial ? "Material" : "SKU"}
-                              </Badge>
-                              <span>{product.code}</span>
-                              <span className="text-muted-foreground">-</span>
-                              <span>{product.name}</span>
+                          <div key={comp.product_id} className="flex items-center justify-between px-3 py-2 text-sm gap-2">
+                            <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+                              {isMaterial ? (
+                                <Badge variant="secondary" className="text-xs flex-shrink-0">
+                                  📦 Material
+                                </Badge>
+                              ) : (
+                                <Badge 
+                                  variant="secondary" 
+                                  className={`text-xs flex-shrink-0 ${
+                                    isCongelado 
+                                      ? "bg-sky-100 text-sky-700" 
+                                      : isLiquido 
+                                      ? "bg-fuchsia-100 text-fuchsia-700"
+                                      : ""
+                                  }`}
+                                >
+                                  {isCongelado && <Snowflake className="w-3 h-3 mr-1" />}
+                                  {isLiquido && <Droplets className="w-3 h-3 mr-1" />}
+                                  {getTypeLabel(productLines, product.product_line || "")}
+                                </Badge>
+                              )}
+                              <span className="flex-shrink-0">{product.code}</span>
+                              <span className="text-muted-foreground flex-shrink-0">-</span>
+                              <span className="truncate">{product.name}</span>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-shrink-0">
                               <Input
                                 type="number"
                                 min="1"
                                 value={comp.quantity}
                                 onChange={(e) => {
-                                  const newComponents = [...productFormData.components];
-                                  newComponents[idx].quantity = parseInt(e.target.value) || 1;
-                                  setProductFormData({ ...productFormData, components: newComponents });
+                                  setProductFormData(prev => {
+                                    const newComponents = [...prev.components];
+                                    newComponents[idx] = { ...newComponents[idx], quantity: parseInt(e.target.value) || 1 };
+                                    return { ...prev, components: newComponents };
+                                  });
                                 }}
                                 className="w-16 h-7 text-xs"
                               />
@@ -1144,11 +1798,13 @@ export function SettingsPage() {
                                 size="icon"
                                 className="h-7 w-7 text-destructive hover:text-destructive"
                                 onClick={() => {
-                                  const newComponents = productFormData.components.filter((_, i) => i !== idx);
-                                  setProductFormData({
-                                    ...productFormData,
-                                    is_composite: newComponents.length > 0,
-                                    components: newComponents
+                                  setProductFormData(prev => {
+                                    const newComponents = prev.components.filter((_, i) => i !== idx);
+                                    return {
+                                      ...prev,
+                                      is_composite: newComponents.length > 0,
+                                      components: newComponents
+                                    };
                                   });
                                 }}
                               >
@@ -1187,25 +1843,16 @@ export function SettingsPage() {
                   {productFormData.components.length === 0 && (
                     <div className="p-3 bg-muted/30 rounded-md text-center">
                       <p className="text-xs text-muted-foreground">
-                        Nenhum componente adicionado. Este é um SKU simples (produto individual).
+                        Nenhum componente adicionado. Adicione os produtos que formam este kit.
                       </p>
                     </div>
                   )}
                 </div>
+                )}
               </>
             )}
             {productDialog.kind === "material" && (
               <>
-                <div className="space-y-2">
-                  <Label htmlFor="code" className="text-sm">Código</Label>
-                  <Input
-                    id="code"
-                    value={productFormData.code}
-                    onChange={(e) => setProductFormData({ ...productFormData, code: e.target.value })}
-                    placeholder="Ex: MAT-010"
-                    className="h-9"
-                  />
-                </div>
                 <div className="space-y-2">
                   <Label htmlFor="pname" className="text-sm">Nome</Label>
                   <Input
@@ -1216,17 +1863,54 @@ export function SettingsPage() {
                     className="h-9"
                   />
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="code" className="text-sm">Código</Label>
+                    <div className="relative">
+                      <Input
+                        id="code"
+                        value={productFormData.code}
+                        onChange={(e) => setProductFormData({ ...productFormData, code: e.target.value.toUpperCase() })}
+                        placeholder={suggestedMaterialCode}
+                        className={`h-9 pr-8 ${productDialog.mode === "create" && productFormData.code && isMaterialCodeTaken(productFormData.code) ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                      />
+                      {productDialog.mode === "create" && !productFormData.code && (
+                        <button
+                          type="button"
+                          onClick={() => setProductFormData({ ...productFormData, code: suggestedMaterialCode })}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-primary hover:underline"
+                          title="Usar código sugerido"
+                        >
+                          Usar
+                        </button>
+                      )}
+                    </div>
+                    {productDialog.mode === "create" && productFormData.code && isMaterialCodeTaken(productFormData.code) && (
+                      <p className="text-xs text-red-500">Código já existe. Sugestão: {suggestedMaterialCode}</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm">Tipo</Label>
+                    <CreatableSelect
+                      value={productFormData.category}
+                      onChange={(value) => setProductFormData({ ...productFormData, category: value })}
+                      options={materialTypes}
+                      onCreateOption={handleCreateMaterialType}
+                      onEditOption={handleEditMaterialType}
+                      onDeleteOption={handleDeleteMaterialType}
+                      placeholder="Selecione o tipo..."
+                      createPlaceholder="Novo tipo..."
+                    />
+                  </div>
+                </div>
                 <div className="space-y-2">
-                  <Label className="text-sm">Tipo</Label>
-                  <CreatableSelect
-                    value={productFormData.category}
-                    onChange={(value) => setProductFormData({ ...productFormData, category: value })}
-                    options={materialTypes}
-                    onCreateOption={handleCreateMaterialType}
-                    onEditOption={handleEditMaterialType}
-                    onDeleteOption={handleDeleteMaterialType}
-                    placeholder="Selecione o tipo..."
-                    createPlaceholder="Novo tipo..."
+                  <Label htmlFor="mat-description" className="text-sm">Descrição</Label>
+                  <Input
+                    id="mat-description"
+                    value={productFormData.description}
+                    onChange={(e) => setProductFormData({ ...productFormData, description: e.target.value })}
+                    placeholder="Ex: Caixa para envio de 10 cartuchos"
+                    className="h-9"
                   />
                 </div>
                 <div className="space-y-2">
@@ -1248,11 +1932,24 @@ export function SettingsPage() {
               </>
             )}
           </div>
-          <DialogFooter>
+          <DialogFooter className="flex-shrink-0 pt-4 border-t">
             <Button type="button" variant="outline" onClick={() => setProductDialog({ open: false, mode: "create", kind: "pop" })} className="h-9">
               Cancelar
             </Button>
-            <Button type="button" onClick={handleProductSubmit} disabled={!productFormData.code || !productFormData.name} className="h-9">
+            <Button 
+              type="button" 
+              onClick={handleProductSubmit} 
+              disabled={
+                !productFormData.code || 
+                !productFormData.name || 
+                (productDialog.mode === "create" && (
+                  productDialog.kind === "pop" 
+                    ? isSkuCodeTaken(productFormData.code) 
+                    : isMaterialCodeTaken(productFormData.code)
+                ))
+              } 
+              className="h-9"
+            >
               {productDialog.mode === "create" ? "Criar" : "Salvar"}
             </Button>
           </DialogFooter>
@@ -1276,13 +1973,38 @@ export function SettingsPage() {
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="assetCode" className="text-sm">Código</Label>
-              <Input
-                id="assetCode"
-                value={assetFormData.code}
-                onChange={(e) => setAssetFormData({ ...assetFormData, code: e.target.value })}
-                placeholder="Ex: CAIXA-001"
-                className="h-9"
-              />
+              {(() => {
+                const suggestedCode = assetDialog.assetType === "box" ? suggestedBoxCode : suggestedEquipmentCode;
+                const isCodeTaken = assetDialog.assetType === "box" 
+                  ? isBoxCodeTaken(assetFormData.code) 
+                  : isEquipmentCodeTaken(assetFormData.code);
+                return (
+                  <>
+                    <div className="relative">
+                      <Input
+                        id="assetCode"
+                        value={assetFormData.code}
+                        onChange={(e) => setAssetFormData({ ...assetFormData, code: e.target.value.toUpperCase() })}
+                        placeholder={suggestedCode}
+                        className={`h-9 pr-8 ${assetDialog.mode === "create" && assetFormData.code && isCodeTaken ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                      />
+                      {assetDialog.mode === "create" && !assetFormData.code && (
+                        <button
+                          type="button"
+                          onClick={() => setAssetFormData({ ...assetFormData, code: suggestedCode })}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-primary hover:underline"
+                          title="Usar código sugerido"
+                        >
+                          Usar
+                        </button>
+                      )}
+                    </div>
+                    {assetDialog.mode === "create" && assetFormData.code && isCodeTaken && (
+                      <p className="text-xs text-red-500">Código já existe. Sugestão: {suggestedCode}</p>
+                    )}
+                  </>
+                );
+              })()}
             </div>
             <div className="space-y-2">
               <Label htmlFor="assetName" className="text-sm">Nome</Label>
@@ -1315,7 +2037,20 @@ export function SettingsPage() {
             <Button type="button" variant="outline" onClick={() => setAssetDialog({ open: false, mode: "create", assetType: "box" })} className="h-9">
               Cancelar
             </Button>
-            <Button type="button" onClick={handleAssetSubmit} disabled={!assetFormData.code || !assetFormData.name} className="h-9">
+            <Button 
+              type="button" 
+              onClick={handleAssetSubmit} 
+              disabled={
+                !assetFormData.code || 
+                !assetFormData.name || 
+                (assetDialog.mode === "create" && (
+                  assetDialog.assetType === "box" 
+                    ? isBoxCodeTaken(assetFormData.code) 
+                    : isEquipmentCodeTaken(assetFormData.code)
+                ))
+              } 
+              className="h-9"
+            >
               {assetDialog.mode === "create" ? "Criar" : "Salvar"}
             </Button>
           </DialogFooter>
