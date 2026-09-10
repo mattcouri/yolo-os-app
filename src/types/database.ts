@@ -6,7 +6,7 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
-export type AssetType = 'caixa_preta' | 'caixa_media' | 'freezer' | 'carrinho' | 'other';
+export type AssetType = 'caixa_preta' | 'caixa_media' | 'caixa_grande' | 'cooler' | 'freezer' | 'carrinho' | 'other';
 
 export type AssetStatus = 
   | 'available' 

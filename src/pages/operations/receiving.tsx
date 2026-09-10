@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Plus, Trash2, QrCode, Package, CheckCircle2, AlertCircle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { useAppStore } from "@/stores";
 
 interface ReceiptItem {
@@ -15,9 +16,15 @@ interface ReceiptItem {
   boxCodes: string;
 }
 
+interface ScannedBox {
+  code: string;
+  asset: ReturnType<typeof useAppStore.getState>["assets"][0] | null;
+  status: "found" | "not_found" | "already_here";
+}
+
 export function ReceivingPage() {
   const navigate = useNavigate();
-  const { products, locations, createReceipt } = useAppStore();
+  const { products, locations, assets, createReceipt, updateAsset, fetchAssets } = useAppStore();
   const popProducts = products.filter((p) => p.kind === "pop");
   const materialProducts = products.filter((p) => p.kind === "material");
   const allProducts = [...popProducts, ...materialProducts];
@@ -33,6 +40,88 @@ export function ReceivingPage() {
   ]);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // QR Scanner state
+  const [scannerInput, setScannerInput] = useState("");
+  const [scannedBoxes, setScannedBoxes] = useState<ScannedBox[]>([]);
+  const [scannerFocused, setScannerFocused] = useState(false);
+  const scannerRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    fetchAssets();
+  }, [fetchAssets]);
+
+  const normalizeCode = (code: string) =>
+    code.trim().toUpperCase().replace(/[\s_]+/g, "-");
+
+  const handleScanInput = (value: string) => {
+    setScannerInput(value);
+    
+    // Auto-process when Enter is pressed or after a short delay (barcode scanner behavior)
+    if (value.includes("\n") || value.includes("\r")) {
+      const codes = value.split(/[\r\n]+/).map(normalizeCode).filter(Boolean);
+      codes.forEach(addScannedBox);
+      setScannerInput("");
+    }
+  };
+
+  const addScannedBox = (code: string) => {
+    const normalizedCode = normalizeCode(code);
+    if (!normalizedCode) return;
+
+    // Check if already scanned
+    if (scannedBoxes.some(b => b.code === normalizedCode)) {
+      return;
+    }
+
+    const asset = assets.find(a => a.code === normalizedCode);
+    
+    let status: ScannedBox["status"] = "not_found";
+    if (asset) {
+      if (asset.location_id === receivingLocation?.id) {
+        status = "already_here";
+      } else {
+        status = "found";
+      }
+    }
+
+    setScannedBoxes(prev => [...prev, { code: normalizedCode, asset: asset || null, status }]);
+    
+    // Also add to the first pop item's box codes
+    if (items.length > 0) {
+      const firstPopItem = items.find(i => {
+        const product = getProduct(i.productId);
+        return product?.kind === "pop";
+      });
+      if (firstPopItem) {
+        const currentCodes = firstPopItem.boxCodes ? firstPopItem.boxCodes.split(/[,;\r\n]+/).map(normalizeCode).filter(Boolean) : [];
+        if (!currentCodes.includes(normalizedCode)) {
+          updateItem(firstPopItem.id, "boxCodes", [...currentCodes, normalizedCode].join(", "));
+        }
+      }
+    }
+  };
+
+  const removeScannedBox = (code: string) => {
+    setScannedBoxes(prev => prev.filter(b => b.code !== code));
+    
+    // Also remove from items' box codes
+    items.forEach(item => {
+      const currentCodes = item.boxCodes ? item.boxCodes.split(/[,;\r\n]+/).map(normalizeCode).filter(Boolean) : [];
+      if (currentCodes.includes(code)) {
+        updateItem(item.id, "boxCodes", currentCodes.filter(c => c !== code).join(", "));
+      }
+    });
+  };
+
+  const handleManualAdd = () => {
+    const code = normalizeCode(scannerInput);
+    if (code) {
+      addScannedBox(code);
+      setScannerInput("");
+      scannerRef.current?.focus();
+    }
+  };
 
   const addItem = () => {
     setItems([
@@ -123,6 +212,16 @@ export function ReceivingPage() {
     setIsSubmitting(true);
 
     try {
+      // Update scanned boxes: move them to receiving location with "with_product" status
+      const boxUpdates = scannedBoxes
+        .filter(b => b.status === "found" && b.asset)
+        .map(b => updateAsset(b.asset!.id, {
+          location_id: receivingLocation.id,
+          status: "with_product",
+        }));
+      
+      await Promise.all(boxUpdates);
+
       const receipt = await createReceipt({
         nf_number: nfNumber.trim(),
         supplier: supplier.trim(),
@@ -136,8 +235,13 @@ export function ReceivingPage() {
         })),
       });
 
+      const boxCount = scannedBoxes.filter(b => b.status === "found").length;
+      const message = boxCount > 0 
+        ? `Recebimento ${receipt.receipt_number} registrado. ${boxCount} caixa(s) movida(s) para recebimento. Produtos em análise.`
+        : `Recebimento ${receipt.receipt_number} registrado. Produtos em análise.`;
+
       navigate("/operations/inspection", {
-        state: { toast: `Recebimento ${receipt.receipt_number} registrado. Produtos em análise.` },
+        state: { toast: message },
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao registrar recebimento");
@@ -205,8 +309,117 @@ export function ReceivingPage() {
           </CardContent>
         </Card>
 
+        {/* QR Scanner Section */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <QrCode className="w-5 h-5" />
+              2. Escanear caixas retornáveis
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Input
+                  ref={scannerRef}
+                  value={scannerInput}
+                  onChange={(e) => handleScanInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleManualAdd();
+                    }
+                  }}
+                  onFocus={() => setScannerFocused(true)}
+                  onBlur={() => setScannerFocused(false)}
+                  placeholder="Escaneie ou digite o código da caixa..."
+                  className={`h-12 text-lg font-mono ${scannerFocused ? "ring-2 ring-primary" : ""}`}
+                />
+                {scannerFocused && (
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <Badge variant="secondary" className="text-xs animate-pulse">
+                      Aguardando scan...
+                    </Badge>
+                  </div>
+                )}
+              </div>
+              <Button type="button" onClick={handleManualAdd} className="h-12 px-6">
+                <Plus className="w-4 h-4 mr-2" />
+                Adicionar
+              </Button>
+            </div>
+
+            {scannedBoxes.length > 0 && (
+              <div className="space-y-2">
+                <Label className="text-sm text-muted-foreground">
+                  {scannedBoxes.length} caixa(s) escaneada(s)
+                </Label>
+                <div className="border rounded-lg divide-y max-h-64 overflow-y-auto">
+                  {scannedBoxes.map((box) => (
+                    <div
+                      key={box.code}
+                      className="flex items-center justify-between p-3 hover:bg-muted/50"
+                    >
+                      <div className="flex items-center gap-3">
+                        {box.status === "found" ? (
+                          <CheckCircle2 className="w-5 h-5 text-green-600" />
+                        ) : box.status === "already_here" ? (
+                          <Package className="w-5 h-5 text-blue-600" />
+                        ) : (
+                          <AlertCircle className="w-5 h-5 text-amber-600" />
+                        )}
+                        <div>
+                          <code className="font-mono font-medium">{box.code}</code>
+                          {box.asset ? (
+                            <p className="text-xs text-muted-foreground">
+                              {box.asset.type === "caixa_preta" ? "Caixa Preta" : 
+                               box.asset.type === "caixa_media" ? "Caixa Média" :
+                               box.asset.type === "caixa_grande" ? "Caixa Grande" : box.asset.type}
+                              {box.status === "already_here" && " • Já está no recebimento"}
+                            </p>
+                          ) : (
+                            <p className="text-xs text-amber-600">
+                              Caixa não cadastrada no sistema
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => removeScannedBox(box.code)}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                {scannedBoxes.some(b => b.status === "not_found") && (
+                  <p className="text-xs text-amber-600">
+                    Caixas não cadastradas serão registradas apenas como texto. Cadastre-as em Configurações → Embalagens para rastreamento completo.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {scannedBoxes.length === 0 && (
+              <div className="text-center py-8 text-muted-foreground">
+                <QrCode className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                <p className="text-sm">
+                  Use um leitor de código de barras ou digite manualmente
+                </p>
+                <p className="text-xs mt-1">
+                  As caixas escaneadas serão movidas automaticamente para o recebimento
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold">2. Produtos e caixas</h2>
+          <h2 className="text-lg font-semibold">3. Produtos e caixas</h2>
 
           {items.map((item, index) => {
             const product = getProduct(item.productId);
