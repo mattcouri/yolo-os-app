@@ -13,7 +13,6 @@ interface ReceiptItem {
   productId: string;
   quantity: string;
   lot: string;
-  boxCodes: string;
 }
 
 interface ScannedBox {
@@ -37,7 +36,7 @@ export function ReceivingPage() {
   );
   const [receiptOrigin, setReceiptOrigin] = useState<"factory" | "supplier" | "internal">("supplier");
   const [items, setItems] = useState<ReceiptItem[]>([
-    { id: "1", productId: popProducts[0]?.id || "", quantity: "", lot: "", boxCodes: "" },
+    { id: "1", productId: popProducts[0]?.id || "", quantity: "", lot: "" },
   ]);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -95,32 +94,10 @@ export function ReceivingPage() {
     }
 
     setScannedBoxes(prev => [...prev, { code: normalizedCode, asset: asset || null, status }]);
-    
-    // Also add to the first pop item's box codes
-    if (items.length > 0) {
-      const firstPopItem = items.find(i => {
-        const product = getProduct(i.productId);
-        return product?.kind === "pop";
-      });
-      if (firstPopItem) {
-        const currentCodes = firstPopItem.boxCodes ? firstPopItem.boxCodes.split(/[,;\r\n]+/).map(normalizeCode).filter(Boolean) : [];
-        if (!currentCodes.includes(normalizedCode)) {
-          updateItem(firstPopItem.id, "boxCodes", [...currentCodes, normalizedCode].join(", "));
-        }
-      }
-    }
   };
 
   const removeScannedBox = (code: string) => {
     setScannedBoxes(prev => prev.filter(b => b.code !== code));
-    
-    // Also remove from items' box codes
-    items.forEach(item => {
-      const currentCodes = item.boxCodes ? item.boxCodes.split(/[,;\r\n]+/).map(normalizeCode).filter(Boolean) : [];
-      if (currentCodes.includes(code)) {
-        updateItem(item.id, "boxCodes", currentCodes.filter(c => c !== code).join(", "));
-      }
-    });
   };
 
   const addBoxFromDropdown = (assetId: string) => {
@@ -135,20 +112,6 @@ export function ReceivingPage() {
       asset, 
       status: asset.location_id === receivingLocation?.id ? "already_here" : "found" 
     }]);
-
-    // Also add to the first pop item's box codes
-    if (items.length > 0) {
-      const firstPopItem = items.find(i => {
-        const product = getProduct(i.productId);
-        return product?.kind === "pop";
-      });
-      if (firstPopItem) {
-        const currentCodes = firstPopItem.boxCodes ? firstPopItem.boxCodes.split(/[,;\r\n]+/).map(normalizeCode).filter(Boolean) : [];
-        if (!currentCodes.includes(normalizedCode)) {
-          updateItem(firstPopItem.id, "boxCodes", [...currentCodes, normalizedCode].join(", "));
-        }
-      }
-    }
   };
 
   const handleManualAdd = () => {
@@ -168,7 +131,6 @@ export function ReceivingPage() {
         productId: popProducts[0]?.id || "",
         quantity: "",
         lot: "",
-        boxCodes: "",
       },
     ]);
   };
@@ -230,20 +192,12 @@ export function ReceivingPage() {
         setError(`Informe o lote de ${product.name}.`);
         return;
       }
+    }
 
-      const codes = parseBoxCodes(item.boxCodes);
-      if (product.kind === "pop" && codes.length === 0) {
-        setError(`Informe as caixas de ${product.name}.`);
-        return;
-      }
-
-      for (const code of codes) {
-        if (usedCodes.has(code)) {
-          setError(`Caixa repetida neste recebimento: ${code}`);
-          return;
-        }
-        usedCodes.add(code);
-      }
+    // Validate boxes for factory receipts
+    if (receiptOrigin === "factory" && scannedBoxes.length === 0) {
+      setError("Escaneie ou selecione pelo menos uma caixa retornável.");
+      return;
     }
 
     setIsSubmitting(true);
@@ -259,6 +213,9 @@ export function ReceivingPage() {
       
       await Promise.all(boxUpdates);
 
+      // Get box codes from scanned boxes for the receipt
+      const allBoxCodes = scannedBoxes.map(b => b.code);
+
       const receipt = await createReceipt({
         nf_number: nfNumber.trim(),
         supplier: supplier.trim(),
@@ -268,7 +225,7 @@ export function ReceivingPage() {
           product_id: item.productId,
           quantity: Number(item.quantity),
           lot: item.lot.trim() || undefined,
-          source_box_codes: parseBoxCodes(item.boxCodes),
+          source_box_codes: receiptOrigin === "factory" ? allBoxCodes : undefined,
         })),
       });
 
@@ -602,29 +559,6 @@ export function ReceivingPage() {
                         required={isPop}
                       />
                     </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>
-                      Códigos das caixas retornáveis{" "}
-                      <span className="text-muted-foreground">
-                        ({isPop ? "obrigatório" : "opcional"})
-                      </span>
-                    </Label>
-                    <textarea
-                      className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-y"
-                      placeholder="PRETA-001, PRETA-007, PRETA-030"
-                      value={item.boxCodes}
-                      onChange={(e) =>
-                        updateItem(item.id, "boxCodes", e.target.value)
-                      }
-                      required={isPop}
-                    />
-                    <small className="text-xs text-muted-foreground">
-                      Digite códigos separados por vírgula ou escaneie com leitor que
-                      preenche texto, um código por linha. A quantidade acima é o total
-                      do produto em todas estas caixas.
-                    </small>
                   </div>
                 </CardContent>
               </Card>
