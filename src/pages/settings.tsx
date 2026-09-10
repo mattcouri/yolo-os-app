@@ -499,10 +499,12 @@ export function SettingsPage() {
     }
     
     try {
+      const assetName = assetDialog.assetType === "box" ? assetFormData.code : assetFormData.name;
+      
       if (assetDialog.mode === "create") {
         await createAsset({
           code: assetFormData.code,
-          name: assetFormData.name,
+          name: assetName,
           description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
           status: "available",
@@ -511,7 +513,7 @@ export function SettingsPage() {
       } else if (assetDialog.item) {
         await updateAsset(assetDialog.item.id, {
           code: assetFormData.code,
-          name: assetFormData.name,
+          name: assetName,
           description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
         });
@@ -1306,24 +1308,9 @@ export function SettingsPage() {
                 emptyMessage="Nenhuma caixa cadastrada."
                 columns={[
                   {
-                    key: "name",
-                    header: "Nome",
-                    render: (item) => <span className="font-medium">{item.name}</span>,
-                  },
-                  {
-                    key: "code",
-                    header: "Código",
-                    width: "w-32",
-                    render: (item) => (
-                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-medium">
-                        {item.code}
-                      </code>
-                    ),
-                  },
-                  {
                     key: "type",
                     header: "Tipo",
-                    width: "w-28",
+                    width: "w-32",
                     render: (item) => (
                       <Badge variant="secondary" className="text-xs font-normal">
                         {getTypeLabel(boxTypes, item.type)}
@@ -1331,33 +1318,26 @@ export function SettingsPage() {
                     ),
                   },
                   {
-                    key: "description",
-                    header: "Descrição",
-                    width: "w-40",
+                    key: "code",
+                    header: "Código",
+                    width: "w-28",
                     render: (item) => (
-                      <span className="text-xs text-muted-foreground truncate">{item.description || "-"}</span>
+                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-medium">
+                        {item.code}
+                      </code>
                     ),
                   },
                   {
-                    key: "location",
-                    header: "Local",
-                    width: "w-28",
-                    render: (item) => {
-                      const location = locations.find(l => l.id === item.location_id);
-                      return location ? (
-                        <Badge variant="outline" className="text-xs font-normal">
-                          <MapPin className="w-3 h-3 mr-1" />
-                          {location.name}
-                        </Badge>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">-</span>
-                      );
-                    },
+                    key: "description",
+                    header: "Descrição",
+                    render: (item) => (
+                      <span className="text-sm text-muted-foreground">{item.description || "-"}</span>
+                    ),
                   },
                   {
                     key: "status",
                     header: "Status",
-                    width: "w-28",
+                    width: "w-32",
                     render: (item) => {
                       const statusMap: Record<string, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
                         available: { label: "Disponível", variant: "default" },
@@ -1406,7 +1386,7 @@ export function SettingsPage() {
                       onClick={() => {
                         setAssetFormData({
                           code: item.code + "-COPIA",
-                          name: item.name,
+                          name: "",
                           description: item.description || "",
                           type: item.type
                         });
@@ -2020,17 +2000,35 @@ export function SettingsPage() {
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="assetName" className="text-sm">Nome</Label>
-              <Input
-                id="assetName"
-                value={assetFormData.name}
-                onChange={(e) => setAssetFormData({ ...assetFormData, name: e.target.value })}
-                placeholder="Ex: Caixa Média 1"
-                className="h-9"
-              />
-            </div>
+            {assetDialog.assetType === "equipment" && (
+              <div className="space-y-2">
+                <Label htmlFor="assetName" className="text-sm">Nome</Label>
+                <Input
+                  id="assetName"
+                  value={assetFormData.name}
+                  onChange={(e) => setAssetFormData({ ...assetFormData, name: e.target.value })}
+                  placeholder="Ex: Freezer Principal"
+                  className="h-9"
+                />
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label className="text-sm">Tipo</Label>
+                <CreatableSelect
+                  value={assetFormData.type}
+                  onChange={(value) => setAssetFormData({ ...assetFormData, type: value })}
+                  options={assetDialog.assetType === "box" ? boxTypes : [
+                    { value: "freezer", label: "Freezer" },
+                    { value: "carrinho", label: "Carrinho" },
+                  ]}
+                  onCreateOption={assetDialog.assetType === "box" ? handleCreateBoxType : undefined}
+                  onEditOption={assetDialog.assetType === "box" ? handleEditBoxType : undefined}
+                  onDeleteOption={assetDialog.assetType === "box" ? handleDeleteBoxType : undefined}
+                  placeholder="Selecione o tipo..."
+                  createPlaceholder="Novo tipo..."
+                />
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="assetCode" className="text-sm">Código</Label>
                 {(() => {
@@ -2066,22 +2064,6 @@ export function SettingsPage() {
                   );
                 })()}
               </div>
-              <div className="space-y-2">
-                <Label className="text-sm">Tipo</Label>
-                <CreatableSelect
-                  value={assetFormData.type}
-                  onChange={(value) => setAssetFormData({ ...assetFormData, type: value })}
-                  options={assetDialog.assetType === "box" ? boxTypes : [
-                    { value: "freezer", label: "Freezer" },
-                    { value: "carrinho", label: "Carrinho" },
-                  ]}
-                  onCreateOption={assetDialog.assetType === "box" ? handleCreateBoxType : undefined}
-                  onEditOption={assetDialog.assetType === "box" ? handleEditBoxType : undefined}
-                  onDeleteOption={assetDialog.assetType === "box" ? handleDeleteBoxType : undefined}
-                  placeholder="Selecione o tipo..."
-                  createPlaceholder="Novo tipo..."
-                />
-              </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="assetDescription" className="text-sm">Descrição</Label>
@@ -2089,7 +2071,7 @@ export function SettingsPage() {
                 id="assetDescription"
                 value={assetFormData.description}
                 onChange={(e) => setAssetFormData({ ...assetFormData, description: e.target.value })}
-                placeholder="Ex: Caixa retornável para transporte de fábrica"
+                placeholder={assetDialog.assetType === "box" ? "Ex: Caixa retornável para transporte de fábrica" : "Ex: Freezer principal do estoque"}
                 className="h-9"
               />
             </div>
@@ -2103,7 +2085,7 @@ export function SettingsPage() {
               onClick={handleAssetSubmit} 
               disabled={
                 !assetFormData.code || 
-                !assetFormData.name || 
+                (assetDialog.assetType === "equipment" && !assetFormData.name) ||
                 (assetDialog.mode === "create" && (
                   assetDialog.assetType === "box" 
                     ? isBoxCodeTaken(assetFormData.code) 
