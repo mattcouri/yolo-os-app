@@ -35,6 +35,7 @@ export function ReceivingPage() {
   const [receiptDate, setReceiptDate] = useState(
     new Date().toISOString().split("T")[0]
   );
+  const [receiptOrigin, setReceiptOrigin] = useState<"factory" | "supplier" | "internal">("supplier");
   const [items, setItems] = useState<ReceiptItem[]>([
     { id: "1", productId: popProducts[0]?.id || "", quantity: "", lot: "", boxCodes: "" },
   ]);
@@ -45,7 +46,15 @@ export function ReceivingPage() {
   const [scannerInput, setScannerInput] = useState("");
   const [scannedBoxes, setScannedBoxes] = useState<ScannedBox[]>([]);
   const [scannerFocused, setScannerFocused] = useState(false);
+  const [showBoxDropdown, setShowBoxDropdown] = useState(false);
   const scannerRef = useRef<HTMLInputElement>(null);
+
+  // Available boxes for dropdown (boxes that are at factory or in transit)
+  const availableBoxes = assets.filter(a => 
+    (a.type === "caixa_preta" || a.type === "caixa_grande" || a.type === "caixa_media") &&
+    (a.status === "at_factory" || a.status === "in_transit" || a.status === "available") &&
+    !scannedBoxes.some(b => b.code === a.code)
+  );
 
   useEffect(() => {
     fetchAssets();
@@ -112,6 +121,34 @@ export function ReceivingPage() {
         updateItem(item.id, "boxCodes", currentCodes.filter(c => c !== code).join(", "));
       }
     });
+  };
+
+  const addBoxFromDropdown = (assetId: string) => {
+    const asset = assets.find(a => a.id === assetId);
+    if (!asset) return;
+    
+    const normalizedCode = normalizeCode(asset.code);
+    if (scannedBoxes.some(b => b.code === normalizedCode)) return;
+
+    setScannedBoxes(prev => [...prev, { 
+      code: normalizedCode, 
+      asset, 
+      status: asset.location_id === receivingLocation?.id ? "already_here" : "found" 
+    }]);
+
+    // Also add to the first pop item's box codes
+    if (items.length > 0) {
+      const firstPopItem = items.find(i => {
+        const product = getProduct(i.productId);
+        return product?.kind === "pop";
+      });
+      if (firstPopItem) {
+        const currentCodes = firstPopItem.boxCodes ? firstPopItem.boxCodes.split(/[,;\r\n]+/).map(normalizeCode).filter(Boolean) : [];
+        if (!currentCodes.includes(normalizedCode)) {
+          updateItem(firstPopItem.id, "boxCodes", [...currentCodes, normalizedCode].join(", "));
+        }
+      }
+    }
   };
 
   const handleManualAdd = () => {
@@ -277,39 +314,64 @@ export function ReceivingPage() {
           <CardHeader>
             <CardTitle className="text-lg">1. Documento de entrada</CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="nf">Número da nota fiscal</Label>
-              <Input
-                id="nf"
-                value={nfNumber}
-                onChange={(e) => setNfNumber(e.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="supplier">Fornecedor</Label>
-              <Input
-                id="supplier"
-                value={supplier}
-                onChange={(e) => setSupplier(e.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="date">Data de recebimento</Label>
-              <Input
-                id="date"
-                type="date"
-                value={receiptDate}
-                onChange={(e) => setReceiptDate(e.target.value)}
-                required
-              />
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="space-y-2">
+                <Label>Origem</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={receiptOrigin}
+                  onChange={(e) => {
+                    setReceiptOrigin(e.target.value as "factory" | "supplier" | "internal");
+                    if (e.target.value === "factory") {
+                      setSupplier("Fábrica");
+                    } else if (supplier === "Fábrica") {
+                      setSupplier("");
+                    }
+                  }}
+                >
+                  <option value="factory">Fábrica</option>
+                  <option value="supplier">Fornecedor</option>
+                  <option value="internal">Transferência interna</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="nf">Número da nota fiscal</Label>
+                <Input
+                  id="nf"
+                  value={nfNumber}
+                  onChange={(e) => setNfNumber(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="supplier">
+                  {receiptOrigin === "factory" ? "Fábrica" : receiptOrigin === "internal" ? "Origem" : "Fornecedor"}
+                </Label>
+                <Input
+                  id="supplier"
+                  value={supplier}
+                  onChange={(e) => setSupplier(e.target.value)}
+                  placeholder={receiptOrigin === "factory" ? "Nome da fábrica" : receiptOrigin === "internal" ? "Local de origem" : "Nome do fornecedor"}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="date">Data de recebimento</Label>
+                <Input
+                  id="date"
+                  type="date"
+                  value={receiptDate}
+                  onChange={(e) => setReceiptDate(e.target.value)}
+                  required
+                />
+              </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* QR Scanner Section */}
+        {/* QR Scanner Section - Only for factory receipts */}
+        {receiptOrigin === "factory" && (
         <Card>
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
@@ -415,11 +477,63 @@ export function ReceivingPage() {
                 </p>
               </div>
             )}
+
+            {/* Box dropdown selector as alternative to scanning */}
+            <div className="border-t pt-4">
+              <button
+                type="button"
+                onClick={() => setShowBoxDropdown(!showBoxDropdown)}
+                className="text-sm text-primary hover:underline flex items-center gap-1"
+              >
+                {showBoxDropdown ? "Ocultar" : "Selecionar"} caixas da lista
+                <Package className="w-4 h-4" />
+              </button>
+              
+              {showBoxDropdown && (
+                <div className="mt-3 space-y-2">
+                  <Label className="text-sm text-muted-foreground">
+                    Selecione caixas cadastradas ({availableBoxes.length} disponíveis)
+                  </Label>
+                  {availableBoxes.length > 0 ? (
+                    <div className="border rounded-lg max-h-48 overflow-y-auto">
+                      {availableBoxes.map((asset) => (
+                        <button
+                          key={asset.id}
+                          type="button"
+                          onClick={() => addBoxFromDropdown(asset.id)}
+                          className="w-full flex items-center justify-between p-3 hover:bg-muted/50 text-left border-b last:border-b-0"
+                        >
+                          <div>
+                            <code className="font-mono font-medium">{asset.code}</code>
+                            <p className="text-xs text-muted-foreground">
+                              {asset.type === "caixa_preta" ? "Caixa Preta" : 
+                               asset.type === "caixa_media" ? "Caixa Média" :
+                               asset.type === "caixa_grande" ? "Caixa Grande" : asset.type}
+                              {asset.description && ` • ${asset.description}`}
+                            </p>
+                          </div>
+                          <Badge variant="outline" className="text-xs">
+                            {asset.status === "at_factory" ? "Na fábrica" :
+                             asset.status === "in_transit" ? "Em trânsito" : "Disponível"}
+                          </Badge>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground py-4 text-center">
+                      Nenhuma caixa disponível para seleção.
+                      {scannedBoxes.length > 0 && " (todas já foram adicionadas)"}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
+        )}
 
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold">3. Produtos e caixas</h2>
+          <h2 className="text-lg font-semibold">{receiptOrigin === "factory" ? "3" : "2"}. Produtos e caixas</h2>
 
           {items.map((item, index) => {
             const product = getProduct(item.productId);
