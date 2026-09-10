@@ -118,6 +118,7 @@ export interface Asset {
   id: string;
   code: string;
   name: string;
+  description: string | null;
   type: AssetType;
   location_id: string | null;
   status: AssetStatus;

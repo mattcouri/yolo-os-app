@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/ui/data-table";
 import { CreatableSelect, type SelectOption } from "@/components/ui/creatable-select";
 import { useAppStore } from "@/stores";
-import { Plus, Pencil, Trash2, Copy, MapPin, Package, Box, Warehouse, IceCream, Layers, Thermometer, Snowflake, Droplets } from "lucide-react";
+import { Plus, Pencil, Trash2, Copy, MapPin, Package, Box, Warehouse, IceCream, Layers, Thermometer, Snowflake, Droplets, QrCode, Download } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import type { Location, Product, Asset } from "@/types/database";
 
 const defaultLocationTypes: SelectOption[] = [
@@ -209,8 +210,13 @@ export function SettingsPage() {
   const [assetFormData, setAssetFormData] = useState({
     code: "",
     name: "",
+    description: "",
     type: "caixa_media",
   });
+
+  // QR Code dialog state
+  const [qrDialog, setQrDialog] = useState<{ open: boolean; asset: Asset | null }>({ open: false, asset: null });
+  const qrRef = useRef<HTMLDivElement>(null);
 
   // Component selector state
   const [componentSelector, setComponentSelector] = useState({ productId: "", quantity: 1 });
@@ -497,6 +503,7 @@ export function SettingsPage() {
         await createAsset({
           code: assetFormData.code,
           name: assetFormData.name,
+          description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
           status: "available",
           is_active: true,
@@ -505,12 +512,13 @@ export function SettingsPage() {
         await updateAsset(assetDialog.item.id, {
           code: assetFormData.code,
           name: assetFormData.name,
+          description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
         });
       }
       
       setAssetDialog({ open: false, mode: "create", assetType: "box" });
-      setAssetFormData({ code: "", name: "", type: "caixa_media" });
+      setAssetFormData({ code: "", name: "", description: "", type: "caixa_media" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erro ao salvar";
       alert(`Erro ao salvar: ${message}`);
@@ -552,6 +560,7 @@ export function SettingsPage() {
     setAssetFormData({
       code: item.code,
       name: item.name,
+      description: item.description || "",
       type: item.type,
     });
     setAssetDialog({ open: true, mode: "edit", assetType, item });
@@ -1280,7 +1289,7 @@ export function SettingsPage() {
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => {
-                    setAssetFormData({ code: "", name: "", type: "caixa_media" });
+                    setAssetFormData({ code: "", name: "", description: "", type: "caixa_media" });
                     setAssetDialog({ open: true, mode: "create", assetType: "box" });
                   }}
                 >
@@ -1297,6 +1306,11 @@ export function SettingsPage() {
                 emptyMessage="Nenhuma caixa cadastrada."
                 columns={[
                   {
+                    key: "name",
+                    header: "Nome",
+                    render: (item) => <span className="font-medium">{item.name}</span>,
+                  },
+                  {
                     key: "code",
                     header: "Código",
                     width: "w-32",
@@ -1307,14 +1321,9 @@ export function SettingsPage() {
                     ),
                   },
                   {
-                    key: "name",
-                    header: "Nome",
-                    render: (item) => <span>{item.name}</span>,
-                  },
-                  {
                     key: "type",
                     header: "Tipo",
-                    width: "w-32",
+                    width: "w-28",
                     render: (item) => (
                       <Badge variant="secondary" className="text-xs font-normal">
                         {getTypeLabel(boxTypes, item.type)}
@@ -1322,23 +1331,52 @@ export function SettingsPage() {
                     ),
                   },
                   {
+                    key: "description",
+                    header: "Descrição",
+                    width: "w-40",
+                    render: (item) => (
+                      <span className="text-xs text-muted-foreground truncate">{item.description || "-"}</span>
+                    ),
+                  },
+                  {
+                    key: "location",
+                    header: "Local",
+                    width: "w-28",
+                    render: (item) => {
+                      const location = locations.find(l => l.id === item.location_id);
+                      return location ? (
+                        <Badge variant="outline" className="text-xs font-normal">
+                          <MapPin className="w-3 h-3 mr-1" />
+                          {location.name}
+                        </Badge>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">-</span>
+                      );
+                    },
+                  },
+                  {
                     key: "status",
                     header: "Status",
                     width: "w-28",
-                    render: (item) => (
-                      <Badge
-                        variant={item.status === "available" ? "default" : "outline"}
-                        className="text-xs font-normal"
-                      >
-                        {item.status === "available"
-                          ? "Disponível"
-                          : item.status === "in_use"
-                          ? "Em uso"
-                          : item.status === "at_factory"
-                          ? "Na fábrica"
-                          : item.status}
-                      </Badge>
-                    ),
+                    render: (item) => {
+                      const statusMap: Record<string, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
+                        available: { label: "Disponível", variant: "default" },
+                        in_use: { label: "Em uso", variant: "secondary" },
+                        with_product: { label: "Com produto", variant: "secondary" },
+                        empty_ready_return: { label: "Vazia p/ retorno", variant: "outline" },
+                        at_factory: { label: "Na fábrica", variant: "outline" },
+                        in_transit: { label: "Em trânsito", variant: "secondary" },
+                        inspection: { label: "Inspeção", variant: "outline" },
+                        cleaning: { label: "Limpeza", variant: "outline" },
+                        damaged: { label: "Danificada", variant: "destructive" },
+                      };
+                      const status = statusMap[item.status] || { label: item.status, variant: "outline" as const };
+                      return (
+                        <Badge variant={status.variant} className="text-xs font-normal">
+                          {status.label}
+                        </Badge>
+                      );
+                    },
                   },
                 ]}
                 actions={(item) => (
@@ -1356,10 +1394,20 @@ export function SettingsPage() {
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7"
+                      onClick={() => setQrDialog({ open: true, asset: item })}
+                      title="Gerar QR Code"
+                    >
+                      <QrCode className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
                       onClick={() => {
                         setAssetFormData({
                           code: item.code + "-COPIA",
                           name: item.name,
+                          description: item.description || "",
                           type: item.type
                         });
                         setAssetDialog({ open: true, mode: "create", assetType: "box" });
@@ -1466,6 +1514,7 @@ export function SettingsPage() {
                         setAssetFormData({
                           code: item.code + "-COPIA",
                           name: item.name,
+                          description: item.description || "",
                           type: item.type
                         });
                         setAssetDialog({ open: true, mode: "create", assetType: "equipment" });
@@ -1972,41 +2021,6 @@ export function SettingsPage() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="assetCode" className="text-sm">Código</Label>
-              {(() => {
-                const suggestedCode = assetDialog.assetType === "box" ? suggestedBoxCode : suggestedEquipmentCode;
-                const isCodeTaken = assetDialog.assetType === "box" 
-                  ? isBoxCodeTaken(assetFormData.code) 
-                  : isEquipmentCodeTaken(assetFormData.code);
-                return (
-                  <>
-                    <div className="relative">
-                      <Input
-                        id="assetCode"
-                        value={assetFormData.code}
-                        onChange={(e) => setAssetFormData({ ...assetFormData, code: e.target.value.toUpperCase() })}
-                        placeholder={suggestedCode}
-                        className={`h-9 pr-8 ${assetDialog.mode === "create" && assetFormData.code && isCodeTaken ? "border-red-500 focus-visible:ring-red-500" : ""}`}
-                      />
-                      {assetDialog.mode === "create" && !assetFormData.code && (
-                        <button
-                          type="button"
-                          onClick={() => setAssetFormData({ ...assetFormData, code: suggestedCode })}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-primary hover:underline"
-                          title="Usar código sugerido"
-                        >
-                          Usar
-                        </button>
-                      )}
-                    </div>
-                    {assetDialog.mode === "create" && assetFormData.code && isCodeTaken && (
-                      <p className="text-xs text-red-500">Código já existe. Sugestão: {suggestedCode}</p>
-                    )}
-                  </>
-                );
-              })()}
-            </div>
-            <div className="space-y-2">
               <Label htmlFor="assetName" className="text-sm">Nome</Label>
               <Input
                 id="assetName"
@@ -2016,20 +2030,67 @@ export function SettingsPage() {
                 className="h-9"
               />
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="assetCode" className="text-sm">Código</Label>
+                {(() => {
+                  const suggestedCode = assetDialog.assetType === "box" ? suggestedBoxCode : suggestedEquipmentCode;
+                  const isCodeTaken = assetDialog.assetType === "box" 
+                    ? isBoxCodeTaken(assetFormData.code) 
+                    : isEquipmentCodeTaken(assetFormData.code);
+                  return (
+                    <>
+                      <div className="relative">
+                        <Input
+                          id="assetCode"
+                          value={assetFormData.code}
+                          onChange={(e) => setAssetFormData({ ...assetFormData, code: e.target.value.toUpperCase() })}
+                          placeholder={suggestedCode}
+                          className={`h-9 pr-8 ${assetDialog.mode === "create" && assetFormData.code && isCodeTaken ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                        />
+                        {assetDialog.mode === "create" && !assetFormData.code && (
+                          <button
+                            type="button"
+                            onClick={() => setAssetFormData({ ...assetFormData, code: suggestedCode })}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-primary hover:underline"
+                            title="Usar código sugerido"
+                          >
+                            Usar
+                          </button>
+                        )}
+                      </div>
+                      {assetDialog.mode === "create" && assetFormData.code && isCodeTaken && (
+                        <p className="text-xs text-red-500">Código já existe. Sugestão: {suggestedCode}</p>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+              <div className="space-y-2">
+                <Label className="text-sm">Tipo</Label>
+                <CreatableSelect
+                  value={assetFormData.type}
+                  onChange={(value) => setAssetFormData({ ...assetFormData, type: value })}
+                  options={assetDialog.assetType === "box" ? boxTypes : [
+                    { value: "freezer", label: "Freezer" },
+                    { value: "carrinho", label: "Carrinho" },
+                  ]}
+                  onCreateOption={assetDialog.assetType === "box" ? handleCreateBoxType : undefined}
+                  onEditOption={assetDialog.assetType === "box" ? handleEditBoxType : undefined}
+                  onDeleteOption={assetDialog.assetType === "box" ? handleDeleteBoxType : undefined}
+                  placeholder="Selecione o tipo..."
+                  createPlaceholder="Novo tipo..."
+                />
+              </div>
+            </div>
             <div className="space-y-2">
-              <Label className="text-sm">Tipo</Label>
-              <CreatableSelect
-                value={assetFormData.type}
-                onChange={(value) => setAssetFormData({ ...assetFormData, type: value })}
-                options={assetDialog.assetType === "box" ? boxTypes : [
-                  { value: "freezer", label: "Freezer" },
-                  { value: "carrinho", label: "Carrinho" },
-                ]}
-                onCreateOption={assetDialog.assetType === "box" ? handleCreateBoxType : undefined}
-                onEditOption={assetDialog.assetType === "box" ? handleEditBoxType : undefined}
-                onDeleteOption={assetDialog.assetType === "box" ? handleDeleteBoxType : undefined}
-                placeholder="Selecione o tipo..."
-                createPlaceholder="Novo tipo..."
+              <Label htmlFor="assetDescription" className="text-sm">Descrição</Label>
+              <Input
+                id="assetDescription"
+                value={assetFormData.description}
+                onChange={(e) => setAssetFormData({ ...assetFormData, description: e.target.value })}
+                placeholder="Ex: Caixa retornável para transporte de fábrica"
+                className="h-9"
               />
             </div>
           </div>
@@ -2077,6 +2138,72 @@ export function SettingsPage() {
             <Button type="button" variant="destructive" onClick={handleDelete} className="h-9">
               <Trash2 className="w-3.5 h-3.5 mr-1.5" />
               Excluir
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* QR Code Dialog */}
+      <Dialog open={qrDialog.open} onOpenChange={(open) => setQrDialog({ ...qrDialog, open })}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-lg flex items-center gap-2">
+              <QrCode className="w-5 h-5" />
+              QR Code - {qrDialog.asset?.code}
+            </DialogTitle>
+            <DialogDescription className="text-sm">
+              {qrDialog.asset?.name}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col items-center py-6">
+            <div ref={qrRef} className="bg-white p-4 rounded-lg shadow-sm border">
+              {qrDialog.asset && (
+                <QRCodeSVG
+                  value={qrDialog.asset.code}
+                  size={200}
+                  level="H"
+                  includeMargin={true}
+                />
+              )}
+            </div>
+            <p className="text-sm text-muted-foreground mt-4 text-center">
+              Escaneie este código para identificar a caixa
+            </p>
+            <p className="text-lg font-mono font-bold mt-2">{qrDialog.asset?.code}</p>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button 
+              type="button" 
+              variant="outline" 
+              onClick={() => {
+                if (qrRef.current && qrDialog.asset) {
+                  const svg = qrRef.current.querySelector('svg');
+                  if (svg) {
+                    const svgData = new XMLSerializer().serializeToString(svg);
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const img = new Image();
+                    img.onload = () => {
+                      canvas.width = img.width;
+                      canvas.height = img.height;
+                      ctx?.drawImage(img, 0, 0);
+                      const pngUrl = canvas.toDataURL('image/png');
+                      const link = document.createElement('a');
+                      link.download = `qr-${qrDialog.asset?.code}.png`;
+                      link.href = pngUrl;
+                      link.click();
+                    };
+                    img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+                  }
+                }
+              }}
+              className="h-9"
+            >
+              <Download className="w-3.5 h-3.5 mr-1.5" />
+              Baixar PNG
+            </Button>
+            <Button type="button" onClick={() => setQrDialog({ open: false, asset: null })} className="h-9">
+              Fechar
             </Button>
           </DialogFooter>
         </DialogContent>
