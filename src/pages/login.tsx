@@ -12,6 +12,7 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState("");
 
   // If Supabase is not configured, redirect to demo mode
   if (!isSupabaseConfigured) {
@@ -36,6 +37,26 @@ export function LoginPage() {
         </Card>
       </div>
     );
+  }
+
+  async function handleForgotPassword() {
+    if (!supabase) return;
+    if (!email.trim()) {
+      setError("Informe o e-mail para receber o link.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setResetSent("");
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}/redefinir-senha`,
+    });
+    setLoading(false);
+    if (resetError) {
+      setError("Não foi possível enviar o e-mail. Tente de novo em alguns minutos.");
+      return;
+    }
+    setResetSent(`Se a conta existir, enviamos um link para ${email.trim()}.`);
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -103,8 +124,19 @@ export function LoginPage() {
               {loading ? "Entrando…" : "Entrar"}
             </Button>
           </form>
+          {resetSent && (
+            <p className="mt-3 text-center text-sm text-emerald-600">{resetSent}</p>
+          )}
+          <button
+            type="button"
+            className="mt-3 w-full text-center text-sm text-muted-foreground hover:text-foreground"
+            onClick={() => void handleForgotPassword()}
+            disabled={loading}
+          >
+            Esqueci a senha
+          </button>
           <p className="mt-4 text-center text-xs text-muted-foreground">
-            Contas são criadas e administradas pelo Supabase Auth.
+            Peça um acesso ao administrador em Gestão → Usuários.
           </p>
         </CardContent>
       </Card>

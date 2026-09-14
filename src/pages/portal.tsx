@@ -6,6 +6,7 @@ import {
   BarChart3,
   ArrowRight,
 } from "lucide-react";
+import { useAuthProfile } from "@/lib/auth";
 
 interface ModuleCardProps {
   title: string;
@@ -45,6 +46,9 @@ function ModuleCard({
 }
 
 export function PortalPage() {
+  const { profile, canAccessManagement, role } = useAuthProfile();
+  const greeting = profile?.full_name?.trim() || "Olá";
+
   return (
     <div className="min-h-[calc(100vh-8rem)] flex flex-col justify-center">
       <div className="py-8 md:py-12 text-center md:text-left">
@@ -52,10 +56,12 @@ export function PortalPage() {
           YOLO OS
         </span>
         <h1 className="text-4xl md:text-5xl font-bold mt-3">
-          Olá, Operador.
+          Olá, {greeting.split(" ")[0]}.
         </h1>
         <p className="text-lg text-muted-foreground mt-2">
-          Escolha onde você quer trabalhar.
+          {role === "user"
+            ? "Operações e pedidos na interface simples."
+            : "Escolha onde você quer trabalhar."}
         </p>
       </div>
 
@@ -76,22 +82,26 @@ export function PortalPage() {
           status="Nova solicitação"
           color="bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
         />
-        <ModuleCard
-          title="Financeiro"
-          description="Faturamento, recebimentos e pendências de cobrança."
-          icon={<DollarSign className="w-8 h-8" />}
-          to="/financeiro"
-          status="Em breve"
-          color="bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400"
-        />
-        <ModuleCard
-          title="Gestão"
-          description="Estoque, documentos, cadastros, relatórios e aprovações."
-          icon={<BarChart3 className="w-8 h-8" />}
-          to="/gestao"
-          status="Dashboard"
-          color="bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
-        />
+        {canAccessManagement && (
+          <>
+            <ModuleCard
+              title="Financeiro"
+              description="Faturamento, recebimentos e pendências de cobrança."
+              icon={<DollarSign className="w-8 h-8" />}
+              to="/financeiro"
+              status="Em breve"
+              color="bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400"
+            />
+            <ModuleCard
+              title="Gestão"
+              description="Estoque, documentos, cadastros, relatórios e aprovações."
+              icon={<BarChart3 className="w-8 h-8" />}
+              to="/gestao"
+              status="Dashboard"
+              color="bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
+            />
+          </>
+        )}
       </div>
 
       <p className="text-center text-sm text-muted-foreground mt-12">

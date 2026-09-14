@@ -105,7 +105,7 @@ function SortableRow<T extends { id: string }>({
         </td>
       ))}
       {actions && (
-        <td className="h-11 px-3 text-right w-28">{actions(item)}</td>
+        <td className="h-11 px-3 text-right whitespace-nowrap">{actions(item)}</td>
       )}
     </tr>
   );
@@ -261,7 +261,7 @@ export function DataTable<T extends { id: string }>({
                   </th>
                 ))}
                 {actions && (
-                  <th className="h-9 px-3 text-right font-medium text-muted-foreground w-28">
+                  <th className="h-9 px-3 text-right font-medium text-muted-foreground whitespace-nowrap">
                     Ações
                   </th>
                 )}
@@ -326,7 +326,7 @@ export function DataTable<T extends { id: string }>({
                       </td>
                     ))}
                     {actions && (
-                      <td className="h-11 px-3 text-right w-28">{actions(item)}</td>
+                      <td className="h-11 px-3 text-right whitespace-nowrap">{actions(item)}</td>
                     )}
                   </tr>
                 ))

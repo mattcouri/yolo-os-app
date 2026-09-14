@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useAppStore } from "@/stores";
-import type { OrderType, FulfillmentMethod, PhysicalState } from "@/types/database";
+import type { OrderType, FulfillmentMethod, PhysicalState, UniformSize } from "@/types/database";
+import { UNIFORM_SIZES, availableForSize } from "@/lib/uniforms";
 
 const orderTypes: { value: OrderType; label: string }[] = [
   { value: "venda", label: "Venda" },
@@ -38,7 +39,7 @@ interface OrderItem {
 
 export function OrderRequestPage() {
   const navigate = useNavigate();
-  const { products, assets, equipmentReservations, createOrder } = useAppStore();
+  const { products, assets, equipmentReservations, uniforms, uniformCheckouts, createOrder } = useAppStore();
 
   const popProducts = products.filter((p) => p.kind === "pop");
   const materialProducts = products.filter((p) => p.kind === "material");
@@ -46,7 +47,11 @@ export function OrderRequestPage() {
   const allProducts = [...popProducts, ...materialProducts, ...equipmentProducts];
 
   const equipmentAssets = assets.filter(
-    (a) => a.type === "freezer" || a.type === "carrinho"
+    (a) =>
+      a.type !== "caixa_preta" &&
+      a.type !== "caixa_media" &&
+      a.type !== "caixa_grande" &&
+      a.control_method !== "quantity"
   );
 
   const tomorrow = new Date();
@@ -75,6 +80,7 @@ export function OrderRequestPage() {
   const [reserveFrom, setReserveFrom] = useState("");
   const [reserveUntil, setReserveUntil] = useState("");
   const [selectedEquipment, setSelectedEquipment] = useState<string[]>([]);
+  const [uniformQty, setUniformQty] = useState<Record<string, Partial<Record<UniformSize, string>>>>({});
 
   const [items, setItems] = useState<OrderItem[]>([
     { id: "1", productId: popProducts[0]?.id || "", quantity: "1", state: "" },
@@ -96,6 +102,7 @@ export function OrderRequestPage() {
   const isEquipmentLoan = orderType === "emprestimo_equipamentos";
   const isReturn = orderType === "troca_devolucao";
   const showEquipmentSection = isEvent || isEquipmentLoan;
+  const showUniformsSection = isEvent;
 
   const addItem = () => {
     setItems([
@@ -175,6 +182,26 @@ export function OrderRequestPage() {
       }
     }
 
+    const uniformLines = Object.entries(uniformQty).flatMap(([uniformId, sizes]) =>
+      UNIFORM_SIZES.map((size) => ({
+        uniform_id: uniformId,
+        size,
+        quantity: Number(sizes[size] || 0),
+      })).filter((line) => line.quantity > 0)
+    );
+
+    if (showUniformsSection) {
+      for (const line of uniformLines) {
+        const uniform = uniforms.find((u) => u.id === line.uniform_id);
+        if (!uniform) continue;
+        const available = availableForSize(uniform, line.size, uniformCheckouts);
+        if (line.quantity > available) {
+          setError(`${uniform.name} tamanho ${line.size}: só há ${available} disponível${available === 1 ? "" : "is"}.`);
+          return;
+        }
+      }
+    }
+
     if (isReturn && !reference.trim()) {
       setError("Informe o pedido, nota ou evento de origem.");
       return;
@@ -215,6 +242,19 @@ export function OrderRequestPage() {
         } as any);
       }
 
+      for (const line of uniformLines) {
+        const uniform = uniforms.find((u) => u.id === line.uniform_id);
+        orderItems.push({
+          product_id: undefined,
+          name: `${uniform?.name || "Uniforme"} · ${line.size}`,
+          code: `UNI-${line.size}`,
+          quantity: line.quantity,
+          unit: "un",
+          requested_state: undefined,
+          is_returnable: true,
+        } as any);
+      }
+
       const order = await createOrder({
         requester_name: requester,
         organization: organization.trim(),
@@ -243,6 +283,7 @@ export function OrderRequestPage() {
         notes: notes.trim() || undefined,
         items: orderItems,
         equipment_ids: selectedEquipment.length > 0 ? selectedEquipment : undefined,
+        uniforms: showUniformsSection && uniformLines.length > 0 ? uniformLines : undefined,
       });
 
       navigate("/orders/success", { state: { order } });
@@ -622,6 +663,63 @@ export function OrderRequestPage() {
                     </label>
                   );
                 })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {showUniformsSection && uniforms.length > 0 && (
+          <Card className="border-l-4 border-l-primary">
+            <CardHeader>
+              <CardTitle className="text-lg">Uniformes do evento</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Informe quantas camisas saem em cada tamanho. Elas voltam ao estoque quando o evento é conferido no retorno.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {uniforms.map((uniform) => (
+                  <div key={uniform.id} className="flex gap-3 rounded-lg border p-3">
+                    <div className="flex shrink-0 gap-1">
+                      {uniform.photo_url ? (
+                        <img src={uniform.photo_url} alt="Frente" className="h-12 w-12 rounded-md object-cover border" />
+                      ) : (
+                        <div className="h-12 w-12 rounded-md border bg-muted" />
+                      )}
+                      {uniform.photo_back_url ? (
+                        <img src={uniform.photo_back_url} alt="Costas" className="h-12 w-12 rounded-md object-cover border" />
+                      ) : null}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <strong className="text-sm">{uniform.name}</strong>
+                      <div className="mt-2 grid grid-cols-4 gap-1">
+                        {UNIFORM_SIZES.map((size) => {
+                          const available = availableForSize(uniform, size, uniformCheckouts);
+                          return (
+                            <div key={size} className="space-y-1">
+                              <div className="text-center text-[10px] text-muted-foreground">
+                                {size} · {available}
+                              </div>
+                              <Input
+                                type="number"
+                                min="0"
+                                max={available}
+                                className="h-8 px-1 text-center"
+                                value={uniformQty[uniform.id]?.[size] || ""}
+                                onChange={(e) =>
+                                  setUniformQty((prev) => ({
+                                    ...prev,
+                                    [uniform.id]: { ...prev[uniform.id], [size]: e.target.value },
+                                  }))
+                                }
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </CardContent>
           </Card>

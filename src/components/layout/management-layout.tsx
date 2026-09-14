@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { ROLE_LABELS, useAuthProfile } from "@/lib/auth";
 
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/gestao" },
@@ -38,6 +39,7 @@ interface ManagementLayoutProps {
 
 export function ManagementLayout({ children }: ManagementLayoutProps) {
   const location = useLocation();
+  const { profile, canManageUsers, role } = useAuthProfile();
   const [collapsed, setCollapsed] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [darkMode, setDarkMode] = useState(() => {
@@ -68,7 +70,9 @@ export function ManagementLayout({ children }: ManagementLayoutProps) {
   };
 
   const userEmail =
-    session?.user?.email ?? (isSupabaseConfigured ? undefined : "demo@yolo.local");
+    profile?.email ||
+    session?.user?.email ||
+    (isSupabaseConfigured ? undefined : "demo@yolo.local");
 
   return (
     <div className="flex h-screen bg-background">
@@ -116,7 +120,9 @@ export function ManagementLayout({ children }: ManagementLayoutProps) {
             )}
           </div>
 
-          {navItems.map((item) => {
+          {navItems
+            .filter((item) => item.path !== "/gestao/users" || canManageUsers)
+            .map((item) => {
             const isActive = location.pathname === item.path;
             return (
               <Link
@@ -164,10 +170,10 @@ export function ManagementLayout({ children }: ManagementLayoutProps) {
               {!collapsed && (
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">
-                    {userEmail.split("@")[0]}
+                    {profile?.full_name || userEmail.split("@")[0]}
                   </p>
                   <p className="text-xs text-muted-foreground truncate">
-                    {userEmail}
+                    {ROLE_LABELS[role]}
                   </p>
                 </div>
               )}

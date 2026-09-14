@@ -1,82 +1,484 @@
-import { useState } from "react";
-import { Plus, Search, Filter } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { ChevronDown, Droplets, Plus, Search, Snowflake } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DataTable } from "@/components/ui/data-table";
+import { useAppStore } from "@/stores";
+import { assembledLocation, isAssemblyBox, stockLeafUnits } from "@/lib/assembly";
+import type { Asset, Location, MaterialStock, Product, ProductComponent, Stock } from "@/types/database";
 
-const mockBoxes = [
-  { id: "CX-001", flavor: "Morango", qty: 100, location: "Estoque", grade: "AAA", state: "Líquido" },
-  { id: "CX-002", flavor: "Morango", qty: 100, location: "Estoque", grade: "AAA", state: "Líquido" },
-  { id: "CX-003", flavor: "Morango", qty: 35, location: "Recebimento 1", grade: "AAA", state: "Líquido" },
-  { id: "CX-004", flavor: "Maracujá", qty: 100, location: "Freezer 1", grade: "B", state: "Congelado" },
-  { id: "CX-005", flavor: "Maracujá", qty: 42, location: "Freezer 1", grade: "B", state: "Congelado" },
-  { id: "CX-006", flavor: "Limão", qty: 235, location: "Recebimento 1", grade: "", state: "Líquido" },
-];
+type GradeKey = "AAA" | "B" | "C" | "blocked" | "analysis";
 
-const locations = ["Recebimento 1", "Sala de embalagem", "Estoque", "Freezer 1", "Freezer da cozinha"];
+const GRADE_LABEL: Record<GradeKey, string> = {
+  AAA: "AAA",
+  B: "B",
+  C: "C",
+  blocked: "Rejeito",
+  analysis: "Análise",
+};
+
+function gradeKey(stock: Stock): GradeKey {
+  if (stock.status === "analysis" || !stock.grade || stock.grade === "pending") return "analysis";
+  if (stock.grade === "blocked") return "blocked";
+  if (stock.grade === "AAA" || stock.grade === "B" || stock.grade === "C") return stock.grade;
+  return "analysis";
+}
+
+function stateLabel(liquid: number, frozen: number) {
+  if (liquid > 0 && frozen > 0) return "Misto";
+  if (frozen > 0) return "Congelado";
+  return "Líquido";
+}
+
+function isRefugo(stock: Stock) {
+  return stock.status === "blocked" || stock.grade === "blocked";
+}
+
+function isLivePop(stock: Stock) {
+  return stock.quantity > 0 && stock.status !== "depleted";
+}
+
+function isCountablePop(stock: Stock) {
+  return isLivePop(stock) && !isRefugo(stock);
+}
+
+function StateMarks({ liquid, frozen, className }: { liquid: number; frozen: number; className?: string }) {
+  if (liquid <= 0 && frozen <= 0) return null;
+  return (
+    <span className={`inline-flex items-center gap-0.5 ${className || ""}`}>
+      {liquid > 0 && (
+        <span
+          className="inline-flex h-5 w-5 items-center justify-center rounded bg-fuchsia-100 text-fuchsia-700"
+          title="Líquido"
+        >
+          <Droplets className="h-3 w-3" />
+        </span>
+      )}
+      {frozen > 0 && (
+        <span
+          className="inline-flex h-5 w-5 items-center justify-center rounded bg-sky-100 text-sky-700"
+          title="Congelado"
+        >
+          <Snowflake className="h-3 w-3" />
+        </span>
+      )}
+    </span>
+  );
+}
+
+interface BoxLine {
+  id: string;
+  code: string;
+  quantity: number;
+  grade: GradeKey;
+  state: string;
+  assembly: boolean;
+}
+
+interface SkuLocationRow {
+  id: string;
+  locationId: string;
+  locationName: string;
+  productId: string;
+  sku: string;
+  name: string;
+  kind: "pop" | "material";
+  isComposite: boolean;
+  total: number;
+  pops: number;
+  boxCount: number;
+  lots: string;
+  liquid: number;
+  frozen: number;
+  aaa: number;
+  b: number;
+  c: number;
+  blocked: number;
+  analysis: number;
+  grades: Record<GradeKey, number>;
+  boxes: BoxLine[];
+  search: string;
+}
+
+function emptyGrades(): Record<GradeKey, number> {
+  return { AAA: 0, B: 0, C: 0, blocked: 0, analysis: 0 };
+}
+
+function buildRows(
+  locations: Location[],
+  products: Product[],
+  assets: Asset[],
+  stock: Stock[],
+  materialStock: MaterialStock[],
+  components: ProductComponent[]
+): SkuLocationRow[] {
+  const locationName = (id: string) => locations.find((l) => l.id === id)?.name || "—";
+  const map = new Map<string, SkuLocationRow>();
+
+  const take = (productId: string, locationId: string, kind: "pop" | "material") => {
+    const key = `${locationId}:${productId}:${kind}`;
+    const existing = map.get(key);
+    if (existing) return existing;
+    const product = products.find((p) => p.id === productId);
+    const row: SkuLocationRow = {
+      id: key,
+      locationId,
+      locationName: locationName(locationId),
+      productId,
+      sku: product?.code || "—",
+      name: product?.flavor || product?.name || "SKU",
+      kind,
+      isComposite: Boolean(product?.is_composite),
+      total: 0,
+      pops: 0,
+      boxCount: 0,
+      lots: "",
+      liquid: 0,
+      frozen: 0,
+      aaa: 0,
+      b: 0,
+      c: 0,
+      blocked: 0,
+      analysis: 0,
+      grades: emptyGrades(),
+      boxes: [],
+      search: "",
+    };
+    map.set(key, row);
+    return row;
+  };
+
+  const lotSet = new Map<string, Set<string>>();
+  const boxIds = new Map<string, Set<string>>();
+
+  for (const item of stock.filter((s) => s.quantity > 0 && s.status !== "depleted")) {
+    const row = take(item.product_id, item.location_id, "pop");
+    const grade = gradeKey(item);
+    row.total += item.quantity;
+    row.pops += stockLeafUnits(item, products, components);
+    row.grades[grade] += item.quantity;
+    if (item.physical_state === "frozen") row.frozen += item.quantity;
+    else row.liquid += item.quantity;
+    const lots = lotSet.get(row.id) || new Set<string>();
+    if (item.lot) lots.add(item.lot);
+    lotSet.set(row.id, lots);
+    if (item.asset_id) {
+      const ids = boxIds.get(row.id) || new Set<string>();
+      ids.add(item.asset_id);
+      boxIds.set(row.id, ids);
+      const asset = assets.find((a) => a.id === item.asset_id);
+      row.boxes.push({
+        id: item.id,
+        code: asset?.code || item.stock_number,
+        quantity: item.quantity,
+        grade,
+        state: item.physical_state === "frozen" ? "Congelado" : "Líquido",
+        assembly: isAssemblyBox(item),
+      });
+    }
+  }
+
+  for (const item of materialStock.filter((s) => s.quantity > 0)) {
+    const row = take(item.product_id, item.location_id, "material");
+    row.total += item.quantity;
+    row.grades.analysis += item.status === "analysis" ? item.quantity : 0;
+    if (item.status === "available") row.grades.AAA += item.quantity;
+    if (item.status === "blocked") row.grades.blocked += item.quantity;
+    const lots = lotSet.get(row.id) || new Set<string>();
+    if (item.lot) lots.add(item.lot);
+    lotSet.set(row.id, lots);
+  }
+
+  return [...map.values()]
+    .map((row) => {
+      const lots = [...(lotSet.get(row.id) || [])].join(", ");
+      return {
+        ...row,
+        boxCount: (boxIds.get(row.id) || new Set()).size,
+        lots,
+        aaa: row.grades.AAA,
+        b: row.grades.B,
+        c: row.grades.C,
+        blocked: row.grades.blocked,
+        analysis: row.grades.analysis,
+        boxes: row.boxes.sort((a, b) => a.code.localeCompare(b.code, "pt-BR")),
+        search: `${row.sku} ${row.name} ${row.locationName} ${lots}`,
+      };
+    })
+    .sort((a, b) => a.locationName.localeCompare(b.locationName, "pt-BR") || a.sku.localeCompare(b.sku, "pt-BR"));
+}
+
+function GradeChips({ grades, kind }: { grades: Record<GradeKey, number>; kind: "pop" | "material" }) {
+  const keys: GradeKey[] = kind === "pop" ? ["AAA", "B", "C", "blocked", "analysis"] : ["AAA", "analysis", "blocked"];
+  const present = keys.filter((key) => grades[key] > 0);
+  if (present.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {present.map((key) => (
+        <Badge key={key} variant={key === "analysis" ? "outline" : key === "blocked" ? "destructive" : "secondary"} className="text-[10px] font-normal">
+          {kind === "material" && key === "AAA" ? "Disponível" : GRADE_LABEL[key]} {grades[key].toLocaleString("pt-BR")}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+function qtyCell(value: number) {
+  if (value <= 0) return <span className="text-muted-foreground">—</span>;
+  return value.toLocaleString("pt-BR");
+}
+
+function InventoryKanban({
+  title,
+  locations,
+  rows,
+  expanded,
+  onToggle,
+  header,
+  emptyBoard,
+}: {
+  title: string;
+  locations: Location[];
+  rows: SkuLocationRow[];
+  expanded: string | null;
+  onToggle: (id: string) => void;
+  header: (location: Location, cards: SkuLocationRow[]) => { units: number; liquid: number; frozen: number; showState: boolean };
+  emptyBoard: string;
+}) {
+  if (locations.length === 0) {
+    return (
+      <div className="space-y-3">
+        <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">{title}</h2>
+        <p className="text-sm text-muted-foreground">{emptyBoard}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">{title}</h2>
+      <div className="flex gap-4 overflow-x-auto pb-2">
+        {locations.map((location) => {
+          const cards = rows.filter((row) => row.locationId === location.id);
+          const { units, liquid, frozen, showState } = header(location, cards);
+          return (
+            <div key={`${title}:${location.id}`} className="w-64 shrink-0 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-medium text-sm truncate">{location.name}</h3>
+                <span className="flex items-center gap-1 shrink-0">
+                  {showState && <StateMarks liquid={liquid} frozen={frozen} />}
+                  <Badge variant="secondary">{units.toLocaleString("pt-BR")} un</Badge>
+                </span>
+              </div>
+              <div className="space-y-2">
+                {cards.map((row) => {
+                  const open = expanded === row.id;
+                  return (
+                    <Card
+                      key={row.id}
+                      className="cursor-pointer hover:shadow-md transition-shadow"
+                      onClick={() => onToggle(row.id)}
+                    >
+                      <CardContent className="p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-mono text-xs text-muted-foreground">{row.sku}</p>
+                            <p className="font-medium truncate">{row.name}</p>
+                          </div>
+                          <ChevronDown className={`w-4 h-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+                        </div>
+                        <div className="flex items-center justify-between mt-2 text-sm">
+                          <span>
+                            {row.total.toLocaleString("pt-BR")} {row.isComposite ? "SKU" : "un"}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {row.kind === "material"
+                              ? row.lots || "Material"
+                              : row.isComposite
+                                ? `${row.pops.toLocaleString("pt-BR")} pops`
+                                : `${row.boxCount} caixa${row.boxCount === 1 ? "" : "s"}`}
+                          </span>
+                        </div>
+                        {row.isComposite && (
+                          <Badge variant="outline" className="mt-2 text-[10px] font-normal">Composto</Badge>
+                        )}
+                        <div className="mt-2">
+                          <GradeChips grades={row.grades} kind={row.kind} />
+                        </div>
+                        {open && <ExpandedDetails row={row} />}
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+                {cards.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">Sem estoque</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ExpandedDetails({ row }: { row: SkuLocationRow }) {
+  const keys: GradeKey[] = row.kind === "pop" ? ["AAA", "B", "C", "blocked", "analysis"] : ["AAA", "analysis", "blocked"];
+  const groups = keys.filter((key) => row.grades[key] > 0 || row.boxes.some((box) => box.grade === key));
+
+  return (
+    <div className="mt-3 space-y-3 border-t pt-3 text-xs">
+      {groups.map((key) => {
+        const boxes = row.boxes.filter((box) => box.grade === key);
+        const label = row.kind === "material" && key === "AAA" ? "Disponível" : GRADE_LABEL[key];
+        return (
+          <div key={key}>
+            <p className="font-medium">
+              {label} · {boxes.length} caixa{boxes.length === 1 ? "" : "s"} · {row.grades[key].toLocaleString("pt-BR")} un
+            </p>
+            {boxes.length > 0 && (
+              <ul className="mt-1 space-y-0.5">
+                {boxes.map((box) => (
+                  <li key={box.id} className="flex justify-between gap-2 font-mono text-muted-foreground">
+                    <span>{box.code}</span>
+                    <span>
+                      {box.quantity.toLocaleString("pt-BR")} un · {box.state}
+                      {box.assembly ? " · caixa de montagem" : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })}
+      {row.kind === "pop" && row.boxes.length === 0 && (
+        <p className="text-muted-foreground">
+          {row.isComposite ? "SKU composto nesta prateleira — sem caixa média." : "Sem caixas médias vinculadas nesta localização."}
+        </p>
+      )}
+      {row.lots && <p className="text-muted-foreground">Lote: {row.lots}</p>}
+    </div>
+  );
+}
 
 export function InventoryPage() {
+  const { locations, products, assets, stock, materialStock, productComponents } = useAppStore();
   const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
 
-  const filteredBoxes = mockBoxes.filter(
-    (box) =>
-      box.id.toLowerCase().includes(search.toLowerCase()) ||
-      box.flavor.toLowerCase().includes(search.toLowerCase())
+  const activeLocations = useMemo(
+    () => [...locations].filter((l) => l.is_active).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "pt-BR")),
+    [locations]
   );
 
-  const totalPops = mockBoxes.reduce((sum, box) => sum + box.qty, 0);
-  const inAnalysis = mockBoxes.filter((box) => !box.grade).reduce((sum, box) => sum + box.qty, 0);
+  const rows = useMemo(
+    () => buildRows(locations, products, assets, stock, materialStock, productComponents),
+    [locations, products, assets, stock, materialStock, productComponents]
+  );
+
+  const filtered = rows.filter((row) => row.search.toLowerCase().includes(search.toLowerCase().trim()));
+  const skuRows = filtered.filter((row) => row.kind === "pop");
+  const materialRows = filtered.filter((row) => row.kind === "material");
+  const assembled = assembledLocation(activeLocations) || assembledLocation(locations);
+  const skuLocations = activeLocations.filter(
+    (location) =>
+      location.id === assembled?.id ||
+      rows.some((row) => row.kind === "pop" && row.locationId === location.id)
+  );
+  const materialLocations = activeLocations.filter((location) =>
+    rows.some((row) => row.kind === "material" && row.locationId === location.id)
+  );
+  const countable = stock.filter(isCountablePop);
+  const popUnits = (item: Stock) => stockLeafUnits(item, products, productComponents);
+  const totalPops = countable.reduce((sum, item) => sum + popUnits(item), 0);
+  const totalFrozen = countable
+    .filter((item) => item.physical_state === "frozen")
+    .reduce((sum, item) => sum + popUnits(item), 0);
+  const totalLiquid = countable
+    .filter((item) => item.physical_state !== "frozen")
+    .reduce((sum, item) => sum + popUnits(item), 0);
+  const totalAaa = countable.filter((item) => gradeKey(item) === "AAA").reduce((sum, item) => sum + popUnits(item), 0);
+  const totalB = countable.filter((item) => gradeKey(item) === "B").reduce((sum, item) => sum + popUnits(item), 0);
+  const totalC = countable.filter((item) => gradeKey(item) === "C").reduce((sum, item) => sum + popUnits(item), 0);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Inventário</h1>
-          <p className="text-muted-foreground">Controle de estoque e movimentação</p>
+          <p className="text-muted-foreground">Estoque real por localização e SKU</p>
         </div>
-        <Button>
-          <Plus className="mr-2 h-4 w-4" />
-          Novo recebimento
+        <Button asChild>
+          <Link to="/operacoes/receber">
+            <Plus className="mr-2 h-4 w-4" />
+            Novo recebimento
+          </Link>
         </Button>
       </div>
 
-      {/* Stats */}
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>Total no estoque</CardDescription>
+            <CardDescription>Total</CardDescription>
             <CardTitle className="text-3xl">{totalPops.toLocaleString("pt-BR")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-xs text-muted-foreground">pops</p>
+            <p className="text-xs text-muted-foreground">pops, sem rejeito (unidades + SKUs montados)</p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>Em análise</CardDescription>
-            <CardTitle className="text-3xl">{inAnalysis.toLocaleString("pt-BR")}</CardTitle>
+            <CardDescription>Estado</CardDescription>
           </CardHeader>
-          <CardContent>
-            <p className="text-xs text-muted-foreground">aguardando classificação</p>
+          <CardContent className="space-y-1.5 pt-0">
+            <div className="flex items-center justify-between text-sm">
+              <span className="inline-flex items-center gap-1.5 text-fuchsia-700">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-fuchsia-100">
+                  <Droplets className="h-3 w-3" />
+                </span>
+                Líquido
+              </span>
+              <span className="font-semibold">{totalLiquid.toLocaleString("pt-BR")}</span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="inline-flex items-center gap-1.5 text-sky-700">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-sky-100">
+                  <Snowflake className="h-3 w-3" />
+                </span>
+                Congelado
+              </span>
+              <span className="font-semibold">{totalFrozen.toLocaleString("pt-BR")}</span>
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>Caixas completas</CardDescription>
-            <CardTitle className="text-3xl">
-              {mockBoxes.filter((b) => b.grade && b.qty === 100).length}
-            </CardTitle>
+            <CardDescription>Classificação</CardDescription>
           </CardHeader>
-          <CardContent>
-            <p className="text-xs text-muted-foreground">100 pops cada</p>
+          <CardContent className="space-y-1 pt-0 text-sm">
+            <div className="flex justify-between gap-2">
+              <span className="text-muted-foreground">AAA</span>
+              <span className="font-semibold">{totalAaa.toLocaleString("pt-BR")}</span>
+            </div>
+            <div className="flex justify-between gap-2">
+              <span className="text-muted-foreground">B</span>
+              <span className="font-semibold">{totalB.toLocaleString("pt-BR")}</span>
+            </div>
+            <div className="flex justify-between gap-2">
+              <span className="text-muted-foreground">C</span>
+              <span className="font-semibold">{totalC.toLocaleString("pt-BR")}</span>
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>Localizações</CardDescription>
-            <CardTitle className="text-3xl">{locations.length}</CardTitle>
+            <CardTitle className="text-3xl">{activeLocations.length}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-xs text-muted-foreground">áreas cadastradas</p>
@@ -84,20 +486,14 @@ export function InventoryPage() {
         </Card>
       </div>
 
-      {/* Search and filters */}
-      <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Buscar caixa, sabor ou lote…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
-        </div>
-        <Button variant="outline" size="icon">
-          <Filter className="h-4 w-4" />
-        </Button>
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          placeholder="Buscar SKU, sabor, local ou lote…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-9"
+        />
       </div>
 
       <Tabs defaultValue="board" className="space-y-4">
@@ -106,79 +502,135 @@ export function InventoryPage() {
           <TabsTrigger value="list">Lista</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="board" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-5">
-            {locations.map((location) => {
-              const boxesInLocation = filteredBoxes.filter((b) => b.location === location);
-              return (
-                <div key={location} className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-medium text-sm">{location}</h3>
-                    <Badge variant="secondary">{boxesInLocation.length}</Badge>
-                  </div>
-                  <div className="space-y-2">
-                    {boxesInLocation.map((box) => (
-                      <Card key={box.id} className="cursor-pointer hover:shadow-md transition-shadow">
-                        <CardContent className="p-3">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-mono text-xs">{box.id}</span>
-                            <Badge variant={box.grade ? "default" : "outline"} className="text-xs">
-                              {box.grade || "Em análise"}
-                            </Badge>
-                          </div>
-                          <p className="font-medium">{box.flavor}</p>
-                          <div className="flex items-center justify-between mt-2 text-sm text-muted-foreground">
-                            <span>{box.qty} pops</span>
-                            <span>{box.state}</span>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                    {boxesInLocation.length === 0 && (
-                      <p className="text-sm text-muted-foreground text-center py-4">
-                        Nenhuma caixa
-                      </p>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+        <TabsContent value="board" className="space-y-8">
+          {activeLocations.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Cadastre localizações em Cadastros.</p>
+          ) : (
+            <>
+              <InventoryKanban
+                title="SKUs e produtos montados"
+                locations={skuLocations}
+                rows={skuRows}
+                expanded={expanded}
+                onToggle={(id) => setExpanded(expanded === id ? null : id)}
+                emptyBoard="Nenhum SKU em estoque."
+                header={(location) => {
+                  const inLocation = countable.filter((item) => item.location_id === location.id);
+                  return {
+                    units: inLocation.reduce((sum, item) => sum + popUnits(item), 0),
+                    liquid: inLocation
+                      .filter((item) => item.physical_state !== "frozen")
+                      .reduce((sum, item) => sum + popUnits(item), 0),
+                    frozen: inLocation
+                      .filter((item) => item.physical_state === "frozen")
+                      .reduce((sum, item) => sum + popUnits(item), 0),
+                    showState: true,
+                  };
+                }}
+              />
+              <InventoryKanban
+                title="Materiais"
+                locations={materialLocations}
+                rows={materialRows}
+                expanded={expanded}
+                onToggle={(id) => setExpanded(expanded === id ? null : id)}
+                emptyBoard="Nenhum material em estoque."
+                header={(_location, cards) => ({
+                  units: cards.reduce((sum, row) => sum + row.total, 0),
+                  liquid: 0,
+                  frozen: 0,
+                  showState: false,
+                })}
+              />
+            </>
+          )}
         </TabsContent>
 
         <TabsContent value="list">
-          <Card>
-            <CardContent className="p-0">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b text-left text-sm text-muted-foreground">
-                    <th className="p-3 font-medium">ID</th>
-                    <th className="p-3 font-medium">Sabor</th>
-                    <th className="p-3 font-medium">Quantidade</th>
-                    <th className="p-3 font-medium">Local</th>
-                    <th className="p-3 font-medium">Classificação</th>
-                    <th className="p-3 font-medium">Estado</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredBoxes.map((box) => (
-                    <tr key={box.id} className="border-b hover:bg-muted/50 cursor-pointer">
-                      <td className="p-3 font-mono text-sm">{box.id}</td>
-                      <td className="p-3">{box.flavor}</td>
-                      <td className="p-3">{box.qty}</td>
-                      <td className="p-3">{box.location}</td>
-                      <td className="p-3">
-                        <Badge variant={box.grade ? "default" : "outline"}>
-                          {box.grade || "Em análise"}
-                        </Badge>
-                      </td>
-                      <td className="p-3">{box.state}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </CardContent>
-          </Card>
+          <DataTable
+            data={filtered}
+            maxHeight="70vh"
+            emptyMessage="Nenhum estoque registrado. Receba uma nota fiscal para começar."
+            columns={[
+              { key: "sku", header: "SKU", sortable: true, render: (row) => <span className="font-mono text-xs">{row.sku}</span> },
+              { key: "name", header: "Produto", sortable: true },
+              { key: "locationName", header: "Local", sortable: true },
+              {
+                key: "total",
+                header: "Un.",
+                sortable: true,
+                render: (row) => row.total.toLocaleString("pt-BR"),
+              },
+              {
+                key: "boxCount",
+                header: "Caixas",
+                sortable: true,
+              },
+              {
+                key: "aaa",
+                header: "AAA",
+                sortable: true,
+                render: (row) => qtyCell(row.grades.AAA),
+              },
+              {
+                key: "b",
+                header: "B",
+                sortable: true,
+                render: (row) => qtyCell(row.grades.B),
+              },
+              {
+                key: "c",
+                header: "C",
+                sortable: true,
+                render: (row) => qtyCell(row.grades.C),
+              },
+              {
+                key: "blocked",
+                header: "Rejeito",
+                sortable: true,
+                render: (row) => qtyCell(row.grades.blocked),
+              },
+              {
+                key: "analysis",
+                header: "Análise",
+                sortable: true,
+                render: (row) => qtyCell(row.grades.analysis),
+              },
+              {
+                key: "liquid",
+                header: "Estado",
+                render: (row) => (row.kind === "pop" ? stateLabel(row.liquid, row.frozen) : "—"),
+              },
+            ]}
+            actions={(row) => (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setExpanded(expanded === `list:${row.id}` ? null : `list:${row.id}`)}
+              >
+                {expanded === `list:${row.id}` ? "Ocultar" : "Caixas"}
+              </Button>
+            )}
+          />
+          {expanded?.startsWith("list:") && (
+            <Card className="mt-3">
+              <CardContent className="p-4">
+                {(() => {
+                  const row = filtered.find((item) => `list:${item.id}` === expanded);
+                  if (!row) return null;
+                  return (
+                    <div>
+                      <p className="text-sm font-medium mb-2">
+                        {row.sku} · {row.name} · {row.locationName}
+                      </p>
+                      <ExpandedDetails row={row} />
+                    </div>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
       </Tabs>
     </div>

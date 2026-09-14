@@ -8,16 +8,34 @@ export type Json =
 
 export type AssetType = 'caixa_preta' | 'caixa_media' | 'caixa_grande' | 'cooler' | 'freezer' | 'carrinho' | 'other';
 
-export type AssetStatus = 
-  | 'available' 
-  | 'in_use' 
-  | 'with_product' 
+export type AssetStatus =
+  | 'available'
+  | 'reserved'
+  | 'in_use'
+  | 'with_product'
   | 'empty_ready_return'
-  | 'at_factory' 
-  | 'in_transit' 
-  | 'inspection' 
-  | 'cleaning' 
-  | 'damaged';
+  | 'at_factory'
+  | 'in_transit'
+  | 'inspection'
+  | 'returned_pending'
+  | 'cleaning'
+  | 'maintenance'
+  | 'damaged'
+  | 'incomplete'
+  | 'lost'
+  | 'written_off';
+
+export type AssetControlMethod = 'individual' | 'kit' | 'quantity';
+
+export type AssetComponentCondition = 'ok' | 'missing' | 'damaged' | 'replaced';
+
+export type AssetAttachmentKind =
+  | 'photo'
+  | 'document'
+  | 'serial'
+  | 'assembly'
+  | 'component'
+  | 'damage';
 
 export type ProductKind = 'pop' | 'material' | 'equipment_service';
 
@@ -83,6 +101,8 @@ export interface Location {
   type: 'receiving' | 'storage' | 'freezer' | 'shipping' | 'other';
   is_active: boolean;
   sort_order: number;
+  requires_box: boolean;
+  system_key: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -100,6 +120,7 @@ export interface Product {
   format: string | null;
   base_quantity: number;
   is_composite: boolean;
+  min_quantity: number;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -118,13 +139,71 @@ export interface Asset {
   id: string;
   code: string;
   name: string;
-  description: string | null;
+  description?: string | null;
   type: AssetType;
   location_id: string | null;
   status: AssetStatus;
   is_active: boolean;
+  category?: string | null;
+  control_method?: AssetControlMethod;
+  brand?: string | null;
+  model?: string | null;
+  serial_number?: string | null;
+  sku_code?: string | null;
+  quantity_on_hand?: number;
+  acquired_at?: string | null;
+  purchase_price?: number | null;
+  supplier?: string | null;
+  nf_number?: string | null;
+  warranty_until?: string | null;
+  useful_life_months?: number | null;
+  voltage?: string | null;
+  power_watts?: number | null;
+  plug_type?: string | null;
+  dimensions?: string | null;
+  weight_kg?: number | null;
+  capacity?: string | null;
+  unit_capacity?: number | null;
+  color?: string | null;
+  operating_temp?: string | null;
+  handling_notes?: string | null;
+  specs?: string | null;
+  custom_fields?: Record<string, string> | null;
+  responsible_name?: string | null;
+  notes?: string | null;
+  photo_url?: string | null;
+  last_moved_at?: string | null;
+  last_maintenance_at?: string | null;
+  maintenance_notes?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface AssetComponent {
+  id: string;
+  parent_asset_id: string;
+  name: string;
+  quantity: number;
+  control_method: 'individual' | 'quantity';
+  component_code: string | null;
+  replaceable: boolean;
+  notes: string | null;
+  photo_url: string | null;
+  is_present: boolean;
+  condition: AssetComponentCondition;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface AssetAttachment {
+  id: string;
+  asset_id: string;
+  file_name: string;
+  file_url: string;
+  file_type: string | null;
+  caption: string | null;
+  kind: AssetAttachmentKind;
+  created_at: string;
 }
 
 export interface Receipt {
@@ -137,6 +216,11 @@ export interface Receipt {
   status: 'pending' | 'inspected' | 'closed';
   notes: string | null;
   created_by: string | null;
+  closed_at: string | null;
+  closed_by: string | null;
+  close_notes: string | null;
+  counted_quantity: number | null;
+  variance_quantity: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -148,6 +232,8 @@ export interface ReceiptItem {
   quantity: number;
   lot: string | null;
   source_box_codes: string[] | null;
+  counted_quantity: number | null;
+  variance_quantity: number | null;
   created_at: string;
 }
 
@@ -222,7 +308,7 @@ export interface Fill {
   inspection_id: string;
   quantity: number;
   product_id: string;
-  grade: 'AAA' | 'B' | 'C';
+  grade: 'AAA' | 'B' | 'C' | 'blocked';
   lot: string | null;
   fifo_date: string | null;
   location_id: string;
@@ -372,6 +458,49 @@ export interface ClassificationReference {
   created_at: string;
 }
 
+export type UniformSize = 'P' | 'M' | 'G' | 'GG';
+
+export type AppRole = 'admin' | 'supervisor' | 'user';
+
+export interface Profile {
+  id: string;
+  full_name: string;
+  email: string | null;
+  role: AppRole;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+  last_sign_in_at?: string | null;
+}
+
+export interface Uniform {
+  id: string;
+  name: string;
+  description: string | null;
+  photo_url: string | null;
+  photo_back_url?: string | null;
+  qty_p: number;
+  qty_m: number;
+  qty_g: number;
+  qty_gg: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UniformCheckout {
+  id: string;
+  uniform_id: string;
+  order_id: string | null;
+  size: UniformSize;
+  quantity: number;
+  status: 'out' | 'returned';
+  checked_out_at: string;
+  returned_at: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -389,6 +518,16 @@ export interface Database {
         Row: Asset;
         Insert: Omit<Asset, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<Omit<Asset, 'id' | 'created_at' | 'updated_at'>>;
+      };
+      asset_components: {
+        Row: AssetComponent;
+        Insert: Omit<AssetComponent, 'id' | 'created_at'>;
+        Update: Partial<Omit<AssetComponent, 'id' | 'created_at'>>;
+      };
+      asset_attachments: {
+        Row: AssetAttachment;
+        Insert: Omit<AssetAttachment, 'id' | 'created_at'>;
+        Update: Partial<Omit<AssetAttachment, 'id' | 'created_at'>>;
       };
       receipts: {
         Row: Receipt;
@@ -464,6 +603,21 @@ export interface Database {
         Row: ClassificationReference;
         Insert: Omit<ClassificationReference, 'id' | 'created_at'>;
         Update: Partial<Omit<ClassificationReference, 'id' | 'created_at'>>;
+      };
+      uniforms: {
+        Row: Uniform;
+        Insert: Omit<Uniform, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<Uniform, 'id' | 'created_at' | 'updated_at'>>;
+      };
+      uniform_checkouts: {
+        Row: UniformCheckout;
+        Insert: Omit<UniformCheckout, 'id' | 'created_at'>;
+        Update: Partial<Omit<UniformCheckout, 'id' | 'created_at'>>;
+      };
+      profiles: {
+        Row: Profile;
+        Insert: Omit<Profile, 'created_at' | 'updated_at' | 'last_sign_in_at'>;
+        Update: Partial<Omit<Profile, 'id' | 'created_at' | 'updated_at' | 'last_sign_in_at'>>;
       };
     };
   };

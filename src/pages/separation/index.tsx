@@ -89,7 +89,8 @@ export function SeparationBoardPage() {
               <div className="space-y-3">
                 {jobs.map((job) => {
                   const { order, items, checkedCount } = getOrderInfo(job.order_id);
-                  if (!order) return null;
+                  if (!order || order.status === "cancelled") return null;
+                  const restock = Boolean(order.notes?.startsWith("reposição:"));
 
                   const hasReturnables = items.some((i) => i.is_returnable);
                   const missing: string[] = [];
@@ -104,7 +105,7 @@ export function SeparationBoardPage() {
                     >
                       <div className="flex items-center justify-between mb-2">
                         <span className="text-xs font-medium text-muted-foreground">
-                          {order.order_number} · {order.order_type}
+                          {order.order_number} · {restock ? "reposição" : order.order_type}
                         </span>
                         <span className="text-xs font-bold">{order.needed_time}</span>
                       </div>
@@ -162,8 +163,11 @@ export function SeparationJobPage() {
     orders,
     orderItems,
     separationJobs,
+    uniforms,
+    uniformCheckouts,
     updateSeparationJob,
     updateOrder,
+    returnUniformsForOrder,
   } = useAppStore();
 
   const order = orders.find((o) => o.id === orderId);
@@ -197,6 +201,7 @@ export function SeparationJobPage() {
 
   const hasReturnables = items.some((i) => i.is_returnable);
   const returnableItems = items.filter((i) => i.is_returnable);
+  const openUniforms = uniformCheckouts.filter((c) => c.order_id === orderId && c.status === "out");
 
   const handleSave = async (print = false) => {
     setError("");
@@ -225,6 +230,10 @@ export function SeparationJobPage() {
       });
 
       await updateOrder(order.id, { status: stage });
+
+      if (stage === "retorno") {
+        await returnUniformsForOrder(order.id);
+      }
 
       if (print) {
         window.print();
@@ -461,6 +470,26 @@ export function SeparationJobPage() {
                 </table>
               </div>
             </div>
+
+            {openUniforms.length > 0 && (
+              <div className="rounded-lg border p-4 space-y-2 print:hidden">
+                <h2 className="text-sm font-semibold">Uniformes em checkout</h2>
+                <p className="text-xs text-muted-foreground">
+                  Ao salvar o estágio Retorno, estas camisas voltam automaticamente ao estoque.
+                </p>
+                <ul className="text-sm space-y-1">
+                  {openUniforms.map((c) => {
+                    const uniform = uniforms.find((u) => u.id === c.uniform_id);
+                    return (
+                      <li key={c.id} className="flex justify-between">
+                        <span>{uniform?.name || "Uniforme"} · {c.size}</span>
+                        <span>{c.quantity} un</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
 
             <div className="print:block hidden border rounded-lg p-4 space-y-2 text-sm">
               <h2 className="font-semibold">2. Entrega</h2>

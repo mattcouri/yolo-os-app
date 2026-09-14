@@ -7,6 +7,63 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useAppStore } from "@/stores";
+import type { Product } from "@/types/database";
+
+const PRODUCT_LINE_LABELS: Record<string, string> = {
+  caipi: "Caipi",
+  drinks: "Drinks",
+  cremoso: "Cremoso",
+  frutas: "Frutas",
+};
+
+const MATERIAL_CATEGORY_LABELS: Record<string, string> = {
+  embalagem: "Embalagem",
+  envio: "Material de Envio",
+  insumo: "Insumo",
+  outro: "Outro",
+};
+
+function productLineLabel(value: string | null | undefined) {
+  if (!value) return "";
+  return PRODUCT_LINE_LABELS[value] || value;
+}
+
+function groupByLine(products: Product[], prefix: string) {
+  const groups = new Map<string, Product[]>();
+  for (const product of products) {
+    const key = productLineLabel(product.product_line) || "Outros";
+    const list = groups.get(key) || [];
+    list.push(product);
+    groups.set(key, list);
+  }
+  const entries = [...groups.entries()];
+  return entries.map(([line, items]) => ({
+    label: entries.length > 1 ? `${prefix} · ${line}` : prefix,
+    items,
+  }));
+}
+
+function sortCatalog(products: Product[]) {
+  return [...products].sort((a, b) => {
+    const line = (a.product_line || a.category || "").localeCompare(b.product_line || b.category || "", "pt-BR");
+    if (line !== 0) return line;
+    return a.code.localeCompare(b.code, "pt-BR");
+  });
+}
+
+function skuOptionLabel(product: Product) {
+  const formatIcon = product.format === "congelado" ? "❄️" : product.format === "liquido" ? "💧" : "";
+  const line = productLineLabel(product.product_line);
+  const units = product.base_quantity || 1;
+  return [formatIcon, `${product.code} - ${product.name}`, line ? `• ${line}` : "", `(${units} un)`]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function materialOptionLabel(product: Product) {
+  const category = product.category ? MATERIAL_CATEGORY_LABELS[product.category] || product.category : "";
+  return [`📦 ${product.code} - ${product.name}`, category ? `• ${category}` : ""].filter(Boolean).join(" ");
+}
 
 interface ReceiptItem {
   id: string;
@@ -21,13 +78,29 @@ interface ScannedBox {
   status: "found" | "not_found" | "already_here";
 }
 
+function inventoryDestinations(locations: ReturnType<typeof useAppStore.getState>["locations"]) {
+  return locations.filter((location) => location.is_active && location.type !== "receiving");
+}
+
+function defaultInventoryLocationId(locations: ReturnType<typeof useAppStore.getState>["locations"]) {
+  const destinations = inventoryDestinations(locations);
+  return (
+    destinations.find((location) => location.type === "storage")?.id ||
+    destinations[0]?.id ||
+    ""
+  );
+}
+
 export function ReceivingPage() {
   const navigate = useNavigate();
-  const { products, locations, assets, createReceipt, updateAsset, fetchAssets } = useAppStore();
-  const popProducts = products.filter((p) => p.kind === "pop");
-  const materialProducts = products.filter((p) => p.kind === "material");
-  const allProducts = [...popProducts, ...materialProducts];
+  const { products, locations, assets, createReceipt, updateAsset, fetchAssets, fetchProducts, fetchLocations } = useAppStore();
+  const activeProducts = products.filter((p) => p.is_active !== false);
+  const simpleProducts = sortCatalog(activeProducts.filter((p) => p.kind === "pop" && !p.is_composite));
+  const compositeProducts = sortCatalog(activeProducts.filter((p) => p.kind === "pop" && p.is_composite));
+  const materialProducts = sortCatalog(activeProducts.filter((p) => p.kind === "material"));
+  const allProducts = [...simpleProducts, ...compositeProducts, ...materialProducts];
   const receivingLocation = locations.find((l) => l.type === "receiving") || locations[0];
+  const stockDestinations = inventoryDestinations(locations);
 
   const [nfNumber, setNfNumber] = useState("");
   const [supplier, setSupplier] = useState("");
@@ -35,8 +108,14 @@ export function ReceivingPage() {
     new Date().toISOString().split("T")[0]
   );
   const [receiptOrigin, setReceiptOrigin] = useState<"factory" | "supplier" | "internal">("supplier");
+  const [destinationId, setDestinationId] = useState("");
+  const isDirect = receiptOrigin !== "factory";
+  const destinationName = stockDestinations.find((location) => location.id === destinationId)?.name;
+  const defaultProductId = isDirect
+    ? materialProducts[0]?.id || ""
+    : simpleProducts[0]?.id || compositeProducts[0]?.id || materialProducts[0]?.id || "";
   const [items, setItems] = useState<ReceiptItem[]>([
-    { id: "1", productId: popProducts[0]?.id || "", quantity: "", lot: "" },
+    { id: "1", productId: defaultProductId, quantity: "", lot: "" },
   ]);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -57,7 +136,24 @@ export function ReceivingPage() {
 
   useEffect(() => {
     fetchAssets();
-  }, [fetchAssets]);
+    fetchProducts();
+    fetchLocations();
+  }, [fetchAssets, fetchProducts, fetchLocations]);
+
+  useEffect(() => {
+    if (!isDirect) return;
+    setDestinationId((current) => current || defaultInventoryLocationId(locations));
+  }, [isDirect, locations]);
+
+  useEffect(() => {
+    if (!defaultProductId) return;
+    setItems((current) => {
+      const next = current.map((item) =>
+        item.productId ? item : { ...item, productId: defaultProductId }
+      );
+      return next.some((item, index) => item.productId !== current[index].productId) ? next : current;
+    });
+  }, [defaultProductId]);
 
   const normalizeCode = (code: string) =>
     code.trim().toUpperCase().replace(/[\s_]+/g, "-");
@@ -128,7 +224,7 @@ export function ReceivingPage() {
       ...items,
       {
         id: String(Date.now()),
-        productId: popProducts[0]?.id || "",
+        productId: defaultProductId,
         quantity: "",
         lot: "",
       },
@@ -148,7 +244,7 @@ export function ReceivingPage() {
   };
 
   const getProduct = (productId: string) =>
-    allProducts.find((p) => p.id === productId);
+    useAppStore.getState().products.find((p) => p.id === productId);
 
   const normalizeBoxCode = (code: string) =>
     code.trim().toUpperCase().replace(/[\s_-]+/g, "-");
@@ -169,14 +265,18 @@ export function ReceivingPage() {
     }
 
     if (items.length === 0) {
-      setError("Adicione pelo menos um produto.");
+      setError(isDirect ? "Adicione pelo menos um material." : "Adicione pelo menos um produto.");
       return;
     }
 
-    const usedCodes = new Set<string>();
+    if (isDirect && !destinationId) {
+      setError("Selecione o local de estoque.");
+      return;
+    }
 
     for (const item of items) {
-      const product = getProduct(item.productId);
+      const productId = item.productId || defaultProductId;
+      const product = getProduct(productId);
       if (!product) {
         setError("Selecione um produto válido.");
         return;
@@ -185,6 +285,11 @@ export function ReceivingPage() {
       const qty = Number(item.quantity);
       if (!Number.isFinite(qty) || qty <= 0) {
         setError(`Informe uma quantidade válida para ${product.name}.`);
+        return;
+      }
+
+      if (isDirect && product.kind === "pop") {
+        setError("Nota de fornecedor não recebe pops. Use origem Fábrica para produto que vai a Preparar.");
         return;
       }
 
@@ -216,13 +321,21 @@ export function ReceivingPage() {
       // Get box codes from scanned boxes for the receipt
       const allBoxCodes = scannedBoxes.map(b => b.code);
 
+      const destination = isDirect ? destinationId : receivingLocation.id;
+      const closeNotes =
+        receiptOrigin === "internal"
+          ? "Entrada direta — transferência interna"
+          : "Entrada direta — fornecedor";
+
       const receipt = await createReceipt({
         nf_number: nfNumber.trim(),
         supplier: supplier.trim(),
         receipt_date: receiptDate,
-        location_id: receivingLocation.id,
+        location_id: destination,
+        direct: isDirect,
+        close_notes: isDirect ? closeNotes : undefined,
         items: items.map((item) => ({
-          product_id: item.productId,
+          product_id: item.productId || defaultProductId,
           quantity: Number(item.quantity),
           lot: item.lot.trim() || undefined,
           source_box_codes: receiptOrigin === "factory" ? allBoxCodes : undefined,
@@ -230,11 +343,13 @@ export function ReceivingPage() {
       });
 
       const boxCount = scannedBoxes.filter(b => b.status === "found").length;
-      const message = boxCount > 0 
-        ? `Recebimento ${receipt.receipt_number} registrado. ${boxCount} caixa(s) movida(s) para recebimento. Produtos em análise.`
-        : `Recebimento ${receipt.receipt_number} registrado. Produtos em análise.`;
+      const message = isDirect
+        ? `NF ${receipt.nf_number} registrada. Materiais no estoque.`
+        : boxCount > 0
+          ? `Recebimento ${receipt.receipt_number} registrado. ${boxCount} caixa(s) movida(s) para recebimento. Produtos em análise.`
+          : `Recebimento ${receipt.receipt_number} registrado. Produtos em análise.`;
 
-      navigate("/operations/inspection", {
+      navigate(isDirect ? "/gestao/receipts" : "/operacoes/preparar", {
         state: { toast: message },
       });
     } catch (err) {
@@ -247,7 +362,7 @@ export function ReceivingPage() {
   return (
     <div className="max-w-3xl mx-auto pb-12">
       <Link
-        to="/operations/actions"
+        to="/operacoes"
         className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mt-6"
       >
         <ArrowRight className="w-4 h-4 rotate-180" />
@@ -257,13 +372,16 @@ export function ReceivingPage() {
       <div className="py-6">
         <h1 className="text-2xl md:text-3xl font-bold">Recebimento</h1>
         <p className="text-muted-foreground mt-1">
-          Uma nota fiscal · vários produtos · todas as caixas
+          {isDirect
+            ? "Nota de fornecedor · entra no estoque e na lista de NFs"
+            : "Uma nota fiscal · vários produtos · todas as caixas"}
         </p>
       </div>
 
       <div className="bg-primary/10 text-primary rounded-lg p-4 mb-6 text-sm">
-        Recebimento em {receivingLocation?.name || "Recebimento"}. Registre todos os
-        produtos da mesma nota fiscal. Quantidades ficam em análise até a conferência.
+        {isDirect
+          ? `A nota entra no estoque agora${destinationName ? ` em ${destinationName}` : ""}. Não passa por Preparar.`
+          : `Recebimento em ${receivingLocation?.name || "Recebimento"}. Registre todos os produtos da mesma nota fiscal. Quantidades ficam em análise até a conferência.`}
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
@@ -279,11 +397,17 @@ export function ReceivingPage() {
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   value={receiptOrigin}
                   onChange={(e) => {
-                    setReceiptOrigin(e.target.value as "factory" | "supplier" | "internal");
-                    if (e.target.value === "factory") {
-                      setSupplier("Fábrica");
-                    } else if (supplier === "Fábrica") {
-                      setSupplier("");
+                    const next = e.target.value as "factory" | "supplier" | "internal";
+                    setReceiptOrigin(next);
+                    if (next === "factory") {
+                      setSupplier((current) => current || "Fábrica");
+                      setDestinationId("");
+                      setItems([{ id: "1", productId: simpleProducts[0]?.id || compositeProducts[0]?.id || materialProducts[0]?.id || "", quantity: "", lot: "" }]);
+                    } else {
+                      if (supplier === "Fábrica") setSupplier("");
+                      setScannedBoxes([]);
+                      setDestinationId(defaultInventoryLocationId(locations));
+                      setItems([{ id: "1", productId: materialProducts[0]?.id || "", quantity: "", lot: "" }]);
                     }
                   }}
                 >
@@ -324,6 +448,27 @@ export function ReceivingPage() {
                 />
               </div>
             </div>
+            {isDirect && (
+              <div className="space-y-2">
+                <Label htmlFor="destination">Local de estoque</Label>
+                <select
+                  id="destination"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={destinationId}
+                  onChange={(e) => setDestinationId(e.target.value)}
+                  required
+                >
+                  <option value="" disabled>
+                    Selecione o local...
+                  </option>
+                  {stockDestinations.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -490,7 +635,9 @@ export function ReceivingPage() {
         )}
 
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold">{receiptOrigin === "factory" ? "3" : "2"}. Produtos e caixas</h2>
+          <h2 className="text-lg font-semibold">
+            {receiptOrigin === "factory" ? "3. Produtos e caixas" : "2. Materiais"}
+          </h2>
 
           {items.map((item, index) => {
             const product = getProduct(item.productId);
@@ -514,21 +661,76 @@ export function ReceivingPage() {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                  <div className="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 mb-4">
                     <div className="space-y-2">
                       <Label>Produto / SKU</Label>
                       <select
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        value={item.productId}
+                        className="flex h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        value={item.productId || defaultProductId}
                         onChange={(e) =>
                           updateItem(item.id, "productId", e.target.value)
                         }
                       >
-                        {allProducts.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} · {p.code}
-                          </option>
-                        ))}
+                        <option value="" disabled>
+                          Selecione um produto...
+                        </option>
+                        {isDirect ? (
+                          materialProducts.length > 0 ? (
+                            Object.entries(
+                              materialProducts.reduce<Record<string, typeof materialProducts>>((groups, product) => {
+                                const key = product.category
+                                  ? MATERIAL_CATEGORY_LABELS[product.category] || product.category
+                                  : "Outros";
+                                (groups[key] ||= []).push(product);
+                                return groups;
+                              }, {})
+                            ).map(([label, groupItems]) => (
+                              <optgroup key={label} label={label}>
+                                {groupItems.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {materialOptionLabel(p)}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ))
+                          ) : (
+                            <option value="" disabled>
+                              Cadastre materiais em Cadastros
+                            </option>
+                          )
+                        ) : (
+                          <>
+                            {simpleProducts.length > 0 &&
+                              groupByLine(simpleProducts, "SKUs Simples").map((group) => (
+                                <optgroup key={group.label} label={group.label}>
+                                  {group.items.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {skuOptionLabel(p)}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            {compositeProducts.length > 0 &&
+                              groupByLine(compositeProducts, "SKUs Compostos").map((group) => (
+                                <optgroup key={group.label} label={group.label}>
+                                  {group.items.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {skuOptionLabel(p)}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            {materialProducts.length > 0 && (
+                              <optgroup label="Materiais">
+                                {materialProducts.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {materialOptionLabel(p)}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                          </>
+                        )}
                       </select>
                     </div>
                     <div className="space-y-2">
@@ -537,7 +739,7 @@ export function ReceivingPage() {
                         type="number"
                         min="1"
                         step={product?.unit === "un" ? "1" : "0.001"}
-                        placeholder="235"
+                        className="h-11"
                         value={item.quantity}
                         onChange={(e) =>
                           updateItem(item.id, "quantity", e.target.value)
@@ -552,6 +754,7 @@ export function ReceivingPage() {
                       <Label>Lote</Label>
                       <Input
                         placeholder="Lote do fabricante"
+                        className="h-11"
                         value={item.lot}
                         onChange={(e) =>
                           updateItem(item.id, "lot", e.target.value)
@@ -567,7 +770,7 @@ export function ReceivingPage() {
 
           <Button type="button" variant="outline" onClick={addItem}>
             <Plus className="w-4 h-4 mr-2" />
-            Adicionar produto
+            Adicionar {isDirect ? "material" : "produto"}
           </Button>
         </div>
 
@@ -586,7 +789,7 @@ export function ReceivingPage() {
             Voltar
           </Button>
           <Button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Registrando..." : "Registrar recebimento"}
+            {isSubmitting ? "Registrando..." : isDirect ? "Registrar nota e estoque" : "Registrar recebimento"}
           </Button>
         </div>
       </form>

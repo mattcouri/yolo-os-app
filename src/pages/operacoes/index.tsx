@@ -52,22 +52,11 @@ function ActionCard({
 }
 
 export function OperacoesPage() {
-  const { stock, materialStock, separationJobs } = useAppStore();
+  const { receipts, separationJobs } = useAppStore();
 
-  const pendingInspection =
-    stock.filter((s) => s.status === "analysis").length +
-    materialStock.filter((m) => m.status === "analysis").length;
+  const pendingPrepare = receipts.filter((receipt) => receipt.status !== "closed").length;
 
-  const awaitingPacking = stock.filter(
-    (s) => s.status === "awaiting_packing"
-  ).length;
-
-  const prepareBadge =
-    pendingInspection > 0
-      ? `${pendingInspection}`
-      : awaitingPacking > 0
-      ? `${awaitingPacking} encaixotar`
-      : undefined;
+  const prepareBadge = pendingPrepare > 0 ? `${pendingPrepare}` : undefined;
 
   return (
     <div className="min-h-[calc(100vh-8rem)] flex flex-col justify-center">
@@ -86,14 +75,14 @@ export function OperacoesPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <ActionCard
           title="Receber"
-          description="Registrar produtos, nota fiscal e caixas de entrada."
+          description="Registrar NF da fábrica (vai a Preparar) ou de fornecedor (entra no estoque)."
           icon={<ArrowDown className="w-7 h-7" />}
           to="/operacoes/receber"
           number="01"
         />
         <ActionCard
           title="Preparar"
-          description="Conferir, classificar e encaixotar os produtos."
+          description="Contar, classificar e encaixotar as notas em recebimento."
           icon={<CheckSquare className="w-7 h-7" />}
           to="/operacoes/preparar"
           number="02"
@@ -101,7 +90,7 @@ export function OperacoesPage() {
         />
         <ActionCard
           title="Movimentar"
-          description="Transferir caixas e separar produtos para saída."
+          description="Mover caixas de 100, montar SKUs ou devolver pretas vazias."
           icon={<ArrowLeftRight className="w-7 h-7" />}
           to="/operacoes/movimentar"
           number="03"

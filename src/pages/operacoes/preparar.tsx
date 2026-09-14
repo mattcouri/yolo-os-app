@@ -1,85 +1,113 @@
 import { Link } from "react-router-dom";
-import { ClipboardCheck, Box, ArrowRight } from "lucide-react";
+import { ArrowRight, CheckCircle2, FileText, Package } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 import { useAppStore } from "@/stores";
+import {
+  countedQuantity,
+  declaredQuantity,
+  formatVariance,
+  remainingQuantity,
+  varianceQuantity,
+} from "@/lib/receipt-progress";
 
-interface SubActionCardProps {
-  title: string;
-  description: string;
-  icon: React.ReactNode;
-  to: string;
-  badge?: string;
+function formatDate(value: string) {
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("pt-BR");
 }
 
-function SubActionCard({
-  title,
-  description,
-  icon,
-  to,
-  badge,
-}: SubActionCardProps) {
-  return (
-    <Link
-      to={to}
-      className="group flex flex-col items-stretch min-h-[200px] p-6 rounded-2xl bg-card text-card-foreground border-2 shadow-sm hover:shadow-lg hover:border-primary/30 transition-all active:scale-[0.98]"
-    >
-      <span className="flex items-center justify-between mb-6">
-        <span className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
-          {icon}
-        </span>
-        {badge && <Badge>{badge}</Badge>}
-      </span>
-      <strong className="text-xl font-bold">{title}</strong>
-      <p className="text-sm text-muted-foreground flex-1 mt-2">{description}</p>
-      <span className="mt-4 flex items-center gap-2 text-primary text-sm font-medium">
-        Iniciar
-        <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
-      </span>
-    </Link>
-  );
+function varianceClass(value: number) {
+  if (value > 0) return "text-emerald-700";
+  if (value < 0) return "text-destructive";
+  return "text-muted-foreground";
 }
 
 export function PrepararPage() {
-  const { stock, materialStock } = useAppStore();
+  const { receipts, receiptItems, stock, materialStock, products, inspections } = useAppStore();
 
-  const pendingInspection =
-    stock.filter((s) => s.status === "analysis").length +
-    materialStock.filter((m) => m.status === "analysis").length;
-
-  const awaitingPacking = stock.filter(
-    (s) => s.status === "awaiting_packing"
-  ).length;
+  const queue = receipts
+    .filter((receipt) => receipt.status !== "closed")
+    .map((receipt) => {
+      const items = receiptItems.filter((item) => item.receipt_id === receipt.id);
+      const remaining = remainingQuantity(receipt.id, stock, materialStock);
+      const declared = declaredQuantity(items);
+      const counted = countedQuantity(receipt, items, inspections);
+      const variance = varianceQuantity(counted, declared);
+      return { receipt, items, remaining, declared, counted, variance };
+    })
+    .sort((a, b) => b.receipt.created_at.localeCompare(a.receipt.created_at));
 
   return (
-    <div className="min-h-[calc(100vh-8rem)] flex flex-col justify-center">
-      <div className="py-8 md:py-12 text-center md:text-left">
+    <div className="max-w-3xl mx-auto pb-12">
+      <div className="py-6 md:py-8">
         <span className="text-sm font-semibold text-primary tracking-wider uppercase">
           PREPARAR
         </span>
-        <h1 className="text-3xl md:text-4xl font-bold mt-3">
-          Preparo de produtos
-        </h1>
+        <h1 className="text-3xl md:text-4xl font-bold mt-3">Notas em recebimento</h1>
         <p className="text-lg text-muted-foreground mt-2">
-          Conferência, classificação e encaixotamento.
+          Conte, classifique e encaixote as notas da fábrica. Notas de fornecedor não passam por aqui.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <SubActionCard
-          title="Conferir / Classificar"
-          description="Contar, verificar qualidade e definir classe (AAA, B, C) dos produtos recebidos."
-          icon={<ClipboardCheck className="w-7 h-7" />}
-          to="/operacoes/preparar/inspecao"
-          badge={pendingInspection > 0 ? `${pendingInspection} itens` : undefined}
-        />
-        <SubActionCard
-          title="Encaixotar"
-          description="Vincular produtos classificados a caixas físicas, definindo destino e lote."
-          icon={<Box className="w-7 h-7" />}
-          to="/operacoes/preparar/encaixotar"
-          badge={awaitingPacking > 0 ? `${awaitingPacking}` : undefined}
-        />
-      </div>
+      {queue.length === 0 ? (
+        <Card>
+          <CardContent className="py-16 text-center text-muted-foreground">
+            <CheckCircle2 className="w-12 h-12 mx-auto mb-4 opacity-50" />
+            <h3 className="font-semibold text-lg text-foreground">Nada pendente</h3>
+            <p className="text-sm mt-1">Notas da fábrica aguardam conferência aqui.</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {queue.map(({ receipt, items, remaining, declared, counted, variance }) => {
+            const names = items
+              .map((item) => products.find((p) => p.id === item.product_id)?.name || products.find((p) => p.id === item.product_id)?.flavor)
+              .filter(Boolean)
+              .slice(0, 3);
+            const boxCount = new Set(
+              items.flatMap((item) => item.source_box_codes || [])
+            ).size;
+
+            return (
+              <Link
+                key={receipt.id}
+                to={`/operacoes/preparar/${receipt.id}`}
+                className="group flex items-stretch gap-4 rounded-2xl border-2 bg-card p-5 shadow-sm hover:border-primary/30 hover:shadow-md active:scale-[0.99] transition-all"
+              >
+                <span className="w-14 h-14 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                  <FileText className="w-7 h-7" />
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="flex items-center gap-2 flex-wrap">
+                    <strong className="text-xl">NF {receipt.nf_number}</strong>
+                    <Badge variant="secondary">{receipt.receipt_number}</Badge>
+                  </span>
+                  <p className="text-sm text-muted-foreground mt-1 truncate">
+                    {receipt.supplier} · {formatDate(receipt.receipt_date)}
+                    {names.length ? ` · ${names.join(", ")}` : ""}
+                  </p>
+                  <p className="text-sm mt-2 flex items-center gap-2 flex-wrap">
+                    <Package className="w-4 h-4 text-muted-foreground" />
+                    Restam <strong>{remaining.toLocaleString("pt-BR")}</strong> de{" "}
+                    {declared.toLocaleString("pt-BR")} · contado {counted.toLocaleString("pt-BR")}
+                    {counted > 0 || remaining === 0 ? (
+                      <span className={varianceClass(variance)}>
+                        · {formatVariance(variance)}
+                      </span>
+                    ) : null}
+                    {boxCount > 0 ? ` · ${boxCount} caixa(s) de entrada` : ""}
+                  </p>
+                </span>
+                <span className="self-center text-primary text-sm font-medium flex items-center gap-1">
+                  Continuar
+                  <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+                </span>
+              </Link>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

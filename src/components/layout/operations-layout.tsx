@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Moon, Sun, LogOut, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { ROLE_LABELS, useAuthProfile } from "@/lib/auth";
 
 interface OperationsLayoutProps {
   children: React.ReactNode;
@@ -18,7 +19,7 @@ export function OperationsLayout({
   backTo = "/",
   backLabel = "Voltar",
 }: OperationsLayoutProps) {
-  const location = useLocation();
+  const { profile, role } = useAuthProfile();
   const [session, setSession] = useState<Session | null>(null);
   const [darkMode, setDarkMode] = useState(() => {
     if (typeof window !== "undefined") {
@@ -47,7 +48,10 @@ export function OperationsLayout({
     }
   };
 
-  const userEmail = session?.user?.email ?? (isSupabaseConfigured ? undefined : "demo@yolo.local");
+  const userEmail =
+    profile?.email ||
+    session?.user?.email ||
+    (isSupabaseConfigured ? undefined : "demo@yolo.local");
 
   return (
     <div className="min-h-screen bg-background">
@@ -91,7 +95,9 @@ export function OperationsLayout({
             {userEmail && (
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground hidden sm:inline">
-                  {userEmail.split("@")[0]}
+                  {profile?.full_name?.split(" ")[0] || userEmail.split("@")[0]}
+                  {" · "}
+                  {ROLE_LABELS[role]}
                 </span>
                 {isSupabaseConfigured && (
                   <Button

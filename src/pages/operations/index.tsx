@@ -147,12 +147,12 @@ export function OperationsActions() {
           title="Preparar"
           description="Conferir, classificar e encaixotar os produtos."
           icon={<CheckSquare className="w-5 h-5" />}
-          to="/operations/inspection"
+          to="/operacoes/preparar"
           number="02"
         />
         <ActionCard
           title="Movimentar"
-          description="Transferir caixas e separar produtos para saída."
+          description="Transferir caixas e montar SKUs."
           icon={<ArrowLeftRight className="w-5 h-5" />}
           to="/operations/transfers"
           number="03"

@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Boxes, ArrowUpFromLine, ArrowRight } from "lucide-react";
+import { Boxes, Layers, ArrowRight, Factory } from "lucide-react";
 
 interface SubActionCardProps {
   title: string;
@@ -37,25 +37,31 @@ export function MovimentarPage() {
           MOVIMENTAR
         </span>
         <h1 className="text-3xl md:text-4xl font-bold mt-3">
-          Transferências e separação
+          Depois do Preparar
         </h1>
         <p className="text-lg text-muted-foreground mt-2">
-          Mover caixas entre locais ou separar produtos para saída.
+          O produto já está no estoque. Daqui o operador move caixas de 100, monta SKUs na mesa ou devolve pretas vazias.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <SubActionCard
           title="Transferir caixas"
-          description="Mover múltiplas caixas de um local para outro. Escanear códigos, escolher destino e confirmar."
+          description="Levar caixas de 100 e escolher a caixa de montagem no packing."
           icon={<Boxes className="w-7 h-7" />}
           to="/operacoes/movimentar/transferir"
         />
         <SubActionCard
-          title="Separar produtos"
-          description="Retirar unidades de caixas no estoque para montar pedidos. Abrir caixa de separação e controlar saídas."
-          icon={<ArrowUpFromLine className="w-7 h-7" />}
-          to="/operacoes/movimentar/separar"
+          title="Montar SKUs"
+          description="Montar cartuchos, caixas e pallets a partir da caixa de montagem."
+          icon={<Layers className="w-7 h-7" />}
+          to="/operacoes/movimentar/montar"
+        />
+        <SubActionCard
+          title="Enviar à fábrica"
+          description="Pretas e grandes já vazias e limpas voltam para reabastecer. O produto entra de novo só no Receber."
+          icon={<Factory className="w-7 h-7" />}
+          to="/operacoes/movimentar/fabrica"
         />
       </div>
     </div>

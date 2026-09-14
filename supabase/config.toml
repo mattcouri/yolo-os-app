@@ -17,8 +17,17 @@ port = 54323
 [auth]
 enabled = true
 site_url = "http://localhost:3000"
-additional_redirect_urls = ["http://localhost:3000"]
+additional_redirect_urls = [
+  "http://localhost:3000",
+  "http://localhost:3000/**",
+  "http://localhost:3001/**",
+  "http://127.0.0.1:3000/**",
+  "http://127.0.0.1:3001/**",
+]
 
 [storage]
 enabled = true
 file_size_limit = "20MiB"
+
+[functions.admin-users]
+verify_jwt = true

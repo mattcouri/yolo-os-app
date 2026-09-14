@@ -10,9 +10,12 @@ import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/ui/data-table";
 import { CreatableSelect, type SelectOption } from "@/components/ui/creatable-select";
 import { useAppStore } from "@/stores";
-import { Plus, Pencil, Trash2, Copy, MapPin, Package, Box, Warehouse, IceCream, Layers, Thermometer, Snowflake, Droplets, QrCode, Download } from "lucide-react";
+import { Plus, Pencil, Trash2, Copy, MapPin, Package, Box, Warehouse, IceCream, Layers, Wrench, Shirt, Snowflake, Droplets, QrCode, Download } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { Location, Product, Asset } from "@/types/database";
+import { AtivosPanel } from "@/pages/settings/ativos-panel";
+import { UniformesPanel } from "@/pages/settings/uniformes-panel";
+import { isBoxAsset } from "@/lib/operational-assets";
 
 const defaultLocationTypes: SelectOption[] = [
   { value: "receiving", label: "Recebimento" },
@@ -33,7 +36,6 @@ const defaultBoxTypes: SelectOption[] = [
   { value: "caixa_media", label: "Caixa Média" },
   { value: "caixa_preta", label: "Caixa Preta" },
   { value: "caixa_grande", label: "Caixa Grande" },
-  { value: "cooler", label: "Cooler" },
 ];
 
 const defaultProductLines: SelectOption[] = [
@@ -191,6 +193,7 @@ export function SettingsPage() {
   const [formData, setFormData] = useState({
     name: "",
     type: "storage",
+    requires_box: true,
   });
 
   const [productFormData, setProductFormData] = useState({
@@ -204,6 +207,7 @@ export function SettingsPage() {
     format: "congelado",
     base_quantity: 1,
     is_composite: false,
+    min_quantity: 0,
     components: [] as ComponentItem[],
   });
 
@@ -212,6 +216,7 @@ export function SettingsPage() {
     name: "",
     description: "",
     type: "caixa_media",
+    unit_capacity: "",
   });
 
   // QR Code dialog state
@@ -384,16 +389,19 @@ export function SettingsPage() {
         type: formData.type,
         is_active: true,
         sort_order: locations.length,
+        requires_box: formData.requires_box,
+        system_key: null,
       });
     } else if (locationDialog.item) {
       await updateLocation(locationDialog.item.id, {
         name: formData.name,
         type: formData.type,
+        requires_box: formData.requires_box,
       });
     }
     
     setLocationDialog({ open: false, mode: "create" });
-    setFormData({ name: "", type: "storage" });
+    setFormData({ name: "", type: "storage", requires_box: true });
   };
 
   const handleProductSubmit = async () => {
@@ -438,6 +446,7 @@ export function SettingsPage() {
           format: productDialog.kind === "pop" ? productFormData.format : undefined,
           base_quantity: productFormData.base_quantity,
           is_composite: components.length > 0,
+          min_quantity: productFormData.is_composite ? productFormData.min_quantity : 0,
           is_active: true,
         });
         productId = newProduct?.id;
@@ -453,6 +462,7 @@ export function SettingsPage() {
           format: productDialog.kind === "pop" ? productFormData.format : undefined,
           base_quantity: productFormData.base_quantity,
           is_composite: components.length > 0,
+          min_quantity: productFormData.is_composite ? productFormData.min_quantity : 0,
         });
         productId = productDialog.item.id;
       }
@@ -469,7 +479,7 @@ export function SettingsPage() {
       setProductFormData({ 
         code: "", name: "", flavor: "", description: "", unit: "un", 
         category: "embalagem", product_line: "caipi", format: "congelado", base_quantity: 1,
-        is_composite: false, components: []
+        is_composite: false, min_quantity: 0, components: []
       });
       setComponentSelector({ productId: "", quantity: 1 });
     } catch (error) {
@@ -500,13 +510,26 @@ export function SettingsPage() {
     
     try {
       const assetName = assetDialog.assetType === "box" ? assetFormData.code : assetFormData.name;
-      
+      const parsedCapacity = Number(assetFormData.unit_capacity);
+      const unitCapacity =
+        assetDialog.assetType === "box" && assetFormData.unit_capacity.trim()
+          ? parsedCapacity
+          : null;
+
+      if (assetDialog.assetType === "box" && assetFormData.unit_capacity.trim()) {
+        if (!Number.isInteger(parsedCapacity) || parsedCapacity <= 0) {
+          alert("Informe a capacidade em unidades, com um número maior que zero.");
+          return;
+        }
+      }
+
       if (assetDialog.mode === "create") {
         await createAsset({
           code: assetFormData.code,
           name: assetName,
           description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
+          unit_capacity: unitCapacity,
           status: "available",
           is_active: true,
         });
@@ -516,11 +539,12 @@ export function SettingsPage() {
           name: assetName,
           description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
+          unit_capacity: unitCapacity,
         });
       }
       
       setAssetDialog({ open: false, mode: "create", assetType: "box" });
-      setAssetFormData({ code: "", name: "", description: "", type: "caixa_media" });
+      setAssetFormData({ code: "", name: "", description: "", type: "caixa_media", unit_capacity: "" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erro ao salvar";
       alert(`Erro ao salvar: ${message}`);
@@ -528,7 +552,11 @@ export function SettingsPage() {
   };
 
   const openEditLocation = (item: Location) => {
-    setFormData({ name: item.name, type: item.type as LocationType });
+    setFormData({
+      name: item.name,
+      type: item.type as LocationType,
+      requires_box: item.requires_box !== false,
+    });
     setLocationDialog({ open: true, mode: "edit", item });
   };
 
@@ -552,6 +580,7 @@ export function SettingsPage() {
       format: item.format || "congelado",
       base_quantity: item.base_quantity || 1,
       is_composite: item.is_composite || false,
+      min_quantity: item.min_quantity || 0,
       components,
     });
     setComponentSelector({ productId: "", quantity: 1 });
@@ -564,6 +593,7 @@ export function SettingsPage() {
       name: item.name,
       description: item.description || "",
       type: item.type,
+      unit_capacity: item.unit_capacity ? String(item.unit_capacity) : "",
     });
     setAssetDialog({ open: true, mode: "edit", assetType, item });
   };
@@ -586,8 +616,8 @@ export function SettingsPage() {
   const simpleProducts = popProducts.filter((p) => !p.is_composite);
   const compositeProducts = popProducts.filter((p) => p.is_composite);
   const materialProducts = products.filter((p) => p.kind === "material");
-  const boxAssets = assets.filter((a) => a.type === "caixa_media" || a.type === "caixa_preta");
-  const equipmentAssets = assets.filter((a) => a.type === "freezer" || a.type === "carrinho");
+  const boxAssets = assets.filter(isBoxAsset);
+  const equipmentAssets = assets.filter((a) => !isBoxAsset(a));
 
   // Helper to generate next sequential code
   const getNextCode = (prefix: string, existingCodes: string[]): string => {
@@ -642,9 +672,13 @@ export function SettingsPage() {
             <Box className="w-3.5 h-3.5 mr-1" />
             Embalagens Vai-Vem
           </TabsTrigger>
-          <TabsTrigger value="equipamentos" className="text-xs px-2.5 h-7">
-            <Thermometer className="w-3.5 h-3.5 mr-1" />
-            Equipamentos
+          <TabsTrigger value="ativos" className="text-xs px-2.5 h-7">
+            <Wrench className="w-3.5 h-3.5 mr-1" />
+            Ativos
+          </TabsTrigger>
+          <TabsTrigger value="uniformes" className="text-xs px-2.5 h-7">
+            <Shirt className="w-3.5 h-3.5 mr-1" />
+            Uniformes
           </TabsTrigger>
           <TabsTrigger value="classificacoes" className="text-xs px-2.5 h-7">
             <Layers className="w-3.5 h-3.5 mr-1" />
@@ -667,7 +701,7 @@ export function SettingsPage() {
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => {
-                    setFormData({ name: "", type: "storage" });
+                    setFormData({ name: "", type: "storage", requires_box: true });
                     setLocationDialog({ open: true, mode: "create" });
                   }}
                 >
@@ -690,6 +724,9 @@ export function SettingsPage() {
                       <div className="flex items-center gap-2">
                         <MapPin className="w-3.5 h-3.5 text-muted-foreground" />
                         <span className="font-medium">{item.name}</span>
+                        {item.system_key === "assembled" && (
+                          <Badge variant="outline" className="text-[10px] font-normal">Sistema</Badge>
+                        )}
                       </div>
                     ),
                   },
@@ -701,6 +738,16 @@ export function SettingsPage() {
                       <Badge variant="secondary" className="text-xs font-normal">
                         {getTypeLabel(locationTypes, item.type)}
                       </Badge>
+                    ),
+                  },
+                  {
+                    key: "requires_box",
+                    header: "Estoque",
+                    width: "w-28",
+                    render: (item) => (
+                      <span className="text-xs text-muted-foreground">
+                        {item.requires_box === false ? "Solto" : "Em caixa"}
+                      </span>
                     ),
                   },
                   {
@@ -732,7 +779,8 @@ export function SettingsPage() {
                       onClick={() => {
                         setFormData({
                           name: item.name + " (cópia)",
-                          type: item.type
+                          type: item.type,
+                          requires_box: item.requires_box !== false,
                         });
                         setLocationDialog({ open: true, mode: "create" });
                       }}
@@ -744,8 +792,9 @@ export function SettingsPage() {
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7 text-destructive hover:text-destructive"
+                      disabled={Boolean(item.system_key)}
                       onClick={() => setDeleteDialog({ open: true, type: "location", item })}
-                      title="Excluir"
+                      title={item.system_key ? "Local do sistema" : "Excluir"}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
@@ -779,7 +828,7 @@ export function SettingsPage() {
                     setProductFormData({ 
                       code: "", name: "", flavor: "", description: "", unit: "un", 
                       category: "embalagem", product_line: "caipi", format: "congelado", base_quantity: 1,
-                      is_composite: false, components: []
+                      is_composite: false, min_quantity: 0, components: []
                     });
                     setComponentSelector({ productId: "", quantity: 1 });
                     setProductDialog({ open: true, mode: "create", kind: "pop" });
@@ -900,6 +949,7 @@ export function SettingsPage() {
                           format: item.format || "congelado",
                           base_quantity: item.base_quantity || 1,
                           is_composite: false,
+                          min_quantity: 0,
                           components: []
                         });
                         setComponentSelector({ productId: "", quantity: 1 });
@@ -945,7 +995,7 @@ export function SettingsPage() {
                     setProductFormData({ 
                       code: "", name: "", flavor: "", description: "", unit: "un", 
                       category: "embalagem", product_line: "caipi", format: "congelado", base_quantity: 1,
-                      is_composite: true, components: []
+                      is_composite: true, min_quantity: 0, components: []
                     });
                     setComponentSelector({ productId: "", quantity: 1 });
                     setProductDialog({ open: true, mode: "create", kind: "pop" });
@@ -1032,6 +1082,14 @@ export function SettingsPage() {
                     },
                   },
                   {
+                    key: "min_quantity",
+                    header: "Mín.",
+                    width: "w-16",
+                    render: (item) => (
+                      <span className="text-xs">{item.min_quantity || "—"}</span>
+                    ),
+                  },
+                  {
                     key: "composition",
                     header: "Composição",
                     width: "w-28",
@@ -1077,6 +1135,7 @@ export function SettingsPage() {
                           format: item.format || "congelado",
                           base_quantity: item.base_quantity || 1,
                           is_composite: true,
+                          min_quantity: item.min_quantity || 0,
                           components: []
                         });
                         setComponentSelector({ productId: "", quantity: 1 });
@@ -1120,7 +1179,7 @@ export function SettingsPage() {
                     setProductFormData({ 
                       code: "", name: "", flavor: "", description: "", unit: "un", 
                       category: "embalagem", product_line: "", format: "", base_quantity: 1,
-                      is_composite: false, components: []
+                      is_composite: false, min_quantity: 0, components: []
                     });
                     setProductDialog({ open: true, mode: "create", kind: "material" });
                   }}
@@ -1201,6 +1260,7 @@ export function SettingsPage() {
                           format: "",
                           base_quantity: 1,
                           is_composite: false,
+                          min_quantity: 0,
                           components: []
                         });
                         setProductDialog({ open: true, mode: "create", kind: "material" });
@@ -1291,7 +1351,7 @@ export function SettingsPage() {
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => {
-                    setAssetFormData({ code: "", name: "", description: "", type: "caixa_media" });
+                    setAssetFormData({ code: "", name: "", description: "", type: "caixa_media", unit_capacity: "" });
                     setAssetDialog({ open: true, mode: "create", assetType: "box" });
                   }}
                 >
@@ -1332,6 +1392,16 @@ export function SettingsPage() {
                     header: "Descrição",
                     render: (item) => (
                       <span className="text-sm text-muted-foreground">{item.description || "-"}</span>
+                    ),
+                  },
+                  {
+                    key: "unit_capacity",
+                    header: "Capacidade",
+                    width: "w-28",
+                    render: (item) => (
+                      <span className="text-sm">
+                        {item.unit_capacity ? `${item.unit_capacity} un` : "—"}
+                      </span>
                     ),
                   },
                   {
@@ -1388,7 +1458,8 @@ export function SettingsPage() {
                           code: item.code + "-COPIA",
                           name: "",
                           description: item.description || "",
-                          type: item.type
+                          type: item.type,
+                          unit_capacity: item.unit_capacity ? String(item.unit_capacity) : "",
                         });
                         setAssetDialog({ open: true, mode: "create", assetType: "box" });
                       }}
@@ -1412,111 +1483,13 @@ export function SettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* EQUIPAMENTOS TAB */}
-        <TabsContent value="equipamentos" className="space-y-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-base font-medium">Equipamentos</CardTitle>
-                  <CardDescription className="text-xs">
-                    Freezers, carrinhos e outros equipamentos para eventos
-                  </CardDescription>
-                </div>
-                <Button size="sm" className="h-8 text-xs">
-                  <Plus className="w-3.5 h-3.5 mr-1" />
-                  Novo equipamento
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <DataTable
-                data={equipmentAssets}
-                searchKey="code"
-                searchPlaceholder="Buscar equipamento..."
-                emptyMessage="Nenhum equipamento cadastrado."
-                columns={[
-                  {
-                    key: "code",
-                    header: "Código",
-                    width: "w-32",
-                    render: (item) => (
-                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-medium">
-                        {item.code}
-                      </code>
-                    ),
-                  },
-                  {
-                    key: "name",
-                    header: "Nome",
-                    render: (item) => <span className="font-medium">{item.name}</span>,
-                  },
-                  {
-                    key: "type",
-                    header: "Tipo",
-                    width: "w-28",
-                    render: (item) => (
-                      <Badge variant="secondary" className="text-xs font-normal">
-                        {item.type === "freezer" ? "Freezer" : "Carrinho"}
-                      </Badge>
-                    ),
-                  },
-                  {
-                    key: "status",
-                    header: "Status",
-                    width: "w-28",
-                    render: (item) => (
-                      <Badge
-                        variant={item.status === "available" ? "default" : "outline"}
-                        className="text-xs font-normal"
-                      >
-                        {item.status === "available" ? "Disponível" : item.status}
-                      </Badge>
-                    ),
-                  },
-                ]}
-                actions={(item) => (
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() => openEditAsset(item, "equipment")}
-                      title="Editar"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() => {
-                        setAssetFormData({
-                          code: item.code + "-COPIA",
-                          name: item.name,
-                          description: item.description || "",
-                          type: item.type
-                        });
-                        setAssetDialog({ open: true, mode: "create", assetType: "equipment" });
-                      }}
-                      title="Duplicar"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-destructive hover:text-destructive"
-                      onClick={() => setDeleteDialog({ open: true, type: "asset", item })}
-                      title="Excluir"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                )}
-              />
-            </CardContent>
-          </Card>
+        {/* ATIVOS TAB */}
+        <TabsContent value="ativos" className="space-y-4">
+          <AtivosPanel />
+        </TabsContent>
+
+        <TabsContent value="uniformes" className="space-y-4">
+          <UniformesPanel />
         </TabsContent>
       </Tabs>
 
@@ -1557,6 +1530,20 @@ export function SettingsPage() {
                 createPlaceholder="Novo tipo..."
               />
             </div>
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1 w-4 h-4"
+                checked={formData.requires_box}
+                onChange={(e) => setFormData({ ...formData, requires_box: e.target.checked })}
+              />
+              <span>
+                Exige caixa média
+                <span className="block text-xs text-muted-foreground">
+                  Desmarque para freezer da cozinha e outros estoques soltos. Rejeito ainda pode ir para o lixo no Preparar.
+                </span>
+              </span>
+            </label>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setLocationDialog({ open: false, mode: "create" })} className="h-9">
@@ -1685,6 +1672,27 @@ export function SettingsPage() {
                     <span className="text-xs text-muted-foreground">(kit, cartucho, combo)</span>
                   </label>
                 </div>
+                {productFormData.is_composite && (
+                <div className="space-y-2 mt-3">
+                  <Label htmlFor="min_quantity" className="text-sm">Estoque mínimo (reposição)</Label>
+                  <Input
+                    id="min_quantity"
+                    type="number"
+                    min={0}
+                    className="h-9"
+                    value={productFormData.min_quantity}
+                    onChange={(e) =>
+                      setProductFormData({
+                        ...productFormData,
+                        min_quantity: Math.max(0, Number(e.target.value) || 0),
+                      })
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Abaixo deste saldo em Produtos montados, Separação ganha um pedido interno de reposição.
+                  </p>
+                </div>
+                )}
                 {productFormData.is_composite && (
                 <div className="border rounded-md p-4 mt-3 bg-muted/20 overflow-hidden">
                   <Label className="text-sm font-medium">Composição (Árvore de Produto)</Label>
@@ -2075,9 +2083,30 @@ export function SettingsPage() {
                 className="h-9"
               />
             </div>
+            {assetDialog.assetType === "box" && (
+              <div className="space-y-2">
+                <Label htmlFor="unitCapacity" className="text-sm">Capacidade (unidades)</Label>
+                <Input
+                  id="unitCapacity"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={assetFormData.unit_capacity}
+                  onChange={(e) => setAssetFormData({ ...assetFormData, unit_capacity: e.target.value })}
+                  placeholder="Quantas unidades cabem nesta caixa"
+                  className="h-9"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Quantidade máxima de pops ou itens que esta embalagem comporta.
+                </p>
+              </div>
+            )}
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setAssetDialog({ open: false, mode: "create", assetType: "box" })} className="h-9">
+            <Button type="button" variant="outline" onClick={() => {
+              setAssetDialog({ open: false, mode: "create", assetType: "box" });
+              setAssetFormData({ code: "", name: "", description: "", type: "caixa_media", unit_capacity: "" });
+            }} className="h-9">
               Cancelar
             </Button>
             <Button 

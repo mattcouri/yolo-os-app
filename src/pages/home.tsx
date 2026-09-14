@@ -75,7 +75,6 @@ export function HomePage() {
 
   const pendingPops = stock.filter((s) => s.status === "analysis");
   const pendingMaterials = materialStock.filter((m) => m.status === "analysis");
-  const awaitingPacking = stock.filter((s) => s.status === "awaiting_packing");
   const activeSeparation = stock.filter(
     (s) => s.is_active_separation && s.quantity > 0
   );
@@ -89,7 +88,7 @@ export function HomePage() {
         detail: `${s.quantity} un · ${s.lot || "Sem lote"}`,
         status: "Conferir",
         icon: <CheckSquare className="w-5 h-5" />,
-        to: "/operations/inspection",
+        to: "/operacoes/preparar",
       };
     }),
     ...pendingMaterials.map((m) => {
@@ -100,7 +99,7 @@ export function HomePage() {
         detail: `${m.quantity} ${product?.unit || "un"} · ${m.lot || "Sem lote"}`,
         status: "Conferir",
         icon: <CheckSquare className="w-5 h-5" />,
-        to: "/operations/inspection",
+        to: "/operacoes/preparar",
       };
     }),
   ];
@@ -131,12 +130,12 @@ export function HomePage() {
           title="Preparar"
           description="Conferir, classificar e encaixotar os produtos."
           icon={<CheckSquare className="w-5 h-5" />}
-          to="/operations/inspection"
+          to="/operacoes/preparar"
           number="02"
         />
         <ActionCard
           title="Movimentar"
-          description="Transferir caixas e separar produtos para saída."
+          description="Transferir caixas e montar SKUs."
           icon={<ArrowLeftRight className="w-5 h-5" />}
           to="/operations/transfers"
           number="03"
@@ -162,7 +161,7 @@ export function HomePage() {
           </div>
           {workQueue.length > 4 && (
             <Link
-              to="/operations/inspection"
+              to="/operacoes/preparar"
               className="text-sm text-primary hover:underline"
             >
               Ver todas
@@ -205,7 +204,7 @@ export function HomePage() {
       <div className="flex items-center gap-4 text-sm text-muted-foreground">
         <span className="flex items-center gap-2">
           <Package className="w-4 h-4" />
-          {activeSeparation.length} caixas em separação
+          {activeSeparation.length} caixas de montagem
         </span>
         <span>Dados de demonstração · alterações apenas nesta sessão</span>
       </div>

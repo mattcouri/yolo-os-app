@@ -1,10 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
+import { AuthProvider, useAuthProfile } from "@/lib/auth";
 import { OperationsLayout } from "@/components/layout/operations-layout";
 import { ManagementLayout } from "@/components/layout/management-layout";
 import { LoginPage } from "@/pages/login";
+import { ResetPasswordPage } from "@/pages/reset-password";
 import { PortalPage } from "@/pages/portal";
 import { OperacoesPage } from "@/pages/operacoes";
 import { PrepararPage } from "@/pages/operacoes/preparar";
@@ -13,15 +15,19 @@ import { PedidosPage } from "@/pages/pedidos";
 import { FinanceiroPage } from "@/pages/financeiro";
 import { GestaoDashboardPage } from "@/pages/gestao";
 import { ReceivingPage } from "@/pages/operations/receiving";
-import { InspectionPage } from "@/pages/operations/inspection";
-import { PackingPage } from "@/pages/operations/packing";
+import { PrepareReceiptPage } from "@/pages/operations/prepare-receipt";
+import { ReceiptsPage } from "@/pages/gestao/receipts";
+import { PackagingPage } from "@/pages/gestao/packaging";
 import { BatchTransferPage } from "@/pages/operations/transfers";
-import { PickingPage } from "@/pages/operations/picking";
+import { SendFactoryPage } from "@/pages/operations/send-factory";
+import { AssemblePage } from "@/pages/operations/assemble";
 import { InventoryCountPage } from "@/pages/operations/inventory-count";
 import { OrderRequestPage, OrderListPage } from "@/pages/orders/request";
 import { SeparationBoardPage, SeparationJobPage } from "@/pages/separation";
 import { InventoryPage } from "@/pages/inventory";
 import { SettingsPage } from "@/pages/settings";
+import { AssetDetailPage } from "@/pages/assets/detail";
+import { UsersPage } from "@/pages/gestao/users";
 import { useAppStore } from "@/stores";
 
 type AuthState = "checking" | "signed-out" | "signed-in" | "demo";
@@ -69,30 +75,72 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function RecoveryRedirect() {
+  const { passwordRecovery } = useAuthProfile();
+  if (passwordRecovery && window.location.pathname !== "/redefinir-senha") {
+    return <Navigate to="/redefinir-senha" replace />;
+  }
+  return null;
+}
+
+function RoleGate({
+  children,
+  staff = false,
+  admin = false,
+}: {
+  children: ReactNode;
+  staff?: boolean;
+  admin?: boolean;
+}) {
+  const { loading, canAccessManagement, canManageUsers } = useAuthProfile();
+  if (loading) {
+    return (
+      <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+        Verificando acesso…
+      </div>
+    );
+  }
+  if (admin && !canManageUsers) return <Navigate to="/" replace />;
+  if (staff && !canAccessManagement) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
 function OperationsRoute({
   children,
   showBack = false,
   backTo = "/",
   backLabel = "Voltar",
+  staff = false,
 }: {
   children: React.ReactNode;
   showBack?: boolean;
   backTo?: string;
   backLabel?: string;
+  staff?: boolean;
 }) {
   return (
     <AuthGate>
-      <OperationsLayout showBack={showBack} backTo={backTo} backLabel={backLabel}>
-        {children}
-      </OperationsLayout>
+      <RoleGate staff={staff}>
+        <OperationsLayout showBack={showBack} backTo={backTo} backLabel={backLabel}>
+          {children}
+        </OperationsLayout>
+      </RoleGate>
     </AuthGate>
   );
 }
 
-function ManagementRoute({ children }: { children: React.ReactNode }) {
+function ManagementRoute({
+  children,
+  admin = false,
+}: {
+  children: React.ReactNode;
+  admin?: boolean;
+}) {
   return (
     <AuthGate>
-      <ManagementLayout>{children}</ManagementLayout>
+      <RoleGate staff admin={admin}>
+        <ManagementLayout>{children}</ManagementLayout>
+      </RoleGate>
     </AuthGate>
   );
 }
@@ -106,8 +154,11 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <Routes>
+      <AuthProvider>
+        <RecoveryRedirect />
+        <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/redefinir-senha" element={<ResetPasswordPage />} />
 
         {/* Main Portal - No sidebar, touch-first */}
         <Route
@@ -145,18 +196,10 @@ export default function App() {
           }
         />
         <Route
-          path="/operacoes/preparar/inspecao"
+          path="/operacoes/preparar/:receiptId"
           element={
             <OperationsRoute showBack backTo="/operacoes/preparar" backLabel="Preparar">
-              <InspectionPage />
-            </OperationsRoute>
-          }
-        />
-        <Route
-          path="/operacoes/preparar/encaixotar"
-          element={
-            <OperationsRoute showBack backTo="/operacoes/preparar" backLabel="Preparar">
-              <PackingPage />
+              <PrepareReceiptPage />
             </OperationsRoute>
           }
         />
@@ -177,10 +220,22 @@ export default function App() {
           }
         />
         <Route
-          path="/operacoes/movimentar/separar"
+          path="/operacoes/movimentar/montar"
           element={
             <OperationsRoute showBack backTo="/operacoes/movimentar" backLabel="Movimentar">
-              <PickingPage />
+              <AssemblePage />
+            </OperationsRoute>
+          }
+        />
+        <Route
+          path="/operacoes/movimentar/separar"
+          element={<Navigate to="/operacoes/movimentar/montar" replace />}
+        />
+        <Route
+          path="/operacoes/movimentar/fabrica"
+          element={
+            <OperationsRoute showBack backTo="/operacoes/movimentar" backLabel="Movimentar">
+              <SendFactoryPage />
             </OperationsRoute>
           }
         />
@@ -223,7 +278,7 @@ export default function App() {
         <Route
           path="/financeiro"
           element={
-            <OperationsRoute showBack backTo="/" backLabel="Portal">
+            <OperationsRoute showBack backTo="/" backLabel="Portal" staff>
               <FinanceiroPage />
             </OperationsRoute>
           }
@@ -273,10 +328,18 @@ export default function App() {
           }
         />
         <Route
+          path="/gestao/ativos/:id"
+          element={
+            <ManagementRoute>
+              <AssetDetailPage />
+            </ManagementRoute>
+          }
+        />
+        <Route
           path="/gestao/receipts"
           element={
             <ManagementRoute>
-              <div className="text-muted-foreground">Notas Fiscais (em breve)</div>
+              <ReceiptsPage />
             </ManagementRoute>
           }
         />
@@ -284,7 +347,7 @@ export default function App() {
           path="/gestao/packaging"
           element={
             <ManagementRoute>
-              <div className="text-muted-foreground">Embalagens (em breve)</div>
+              <PackagingPage />
             </ManagementRoute>
           }
         />
@@ -307,12 +370,13 @@ export default function App() {
         <Route
           path="/gestao/users"
           element={
-            <ManagementRoute>
-              <div className="text-muted-foreground">Usuários (em breve)</div>
+            <ManagementRoute admin>
+              <UsersPage />
             </ManagementRoute>
           }
         />
-      </Routes>
+        </Routes>
+      </AuthProvider>
     </BrowserRouter>
   );
 }
