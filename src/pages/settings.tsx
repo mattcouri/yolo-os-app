@@ -17,6 +17,16 @@ import { AtivosPanel } from "@/pages/settings/ativos-panel";
 import { UniformesPanel } from "@/pages/settings/uniformes-panel";
 import { isBoxAsset } from "@/lib/operational-assets";
 
+const LOCATION_TYPES: Location["type"][] = ["receiving", "storage", "freezer", "shipping", "other"];
+
+function asLocationType(value: string): Location["type"] {
+  return LOCATION_TYPES.includes(value as Location["type"]) ? (value as Location["type"]) : "other";
+}
+
+function nullableText(enabled: boolean, value: string) {
+  return enabled ? value || null : null;
+}
+
 const defaultLocationTypes: SelectOption[] = [
   { value: "receiving", label: "Recebimento" },
   { value: "storage", label: "Estoque" },
@@ -190,7 +200,11 @@ export function SettingsPage() {
     item?: Location | Product | Asset;
   }>({ open: false, type: "location" });
 
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<{
+    name: string;
+    type: Location["type"];
+    requires_box: boolean;
+  }>({
     name: "",
     type: "storage",
     requires_box: true,
@@ -437,13 +451,13 @@ export function SettingsPage() {
         const newProduct = await createProduct({
           code: productFormData.code,
           name: productFormData.name,
-          flavor: productDialog.kind === "pop" ? productFormData.flavor : undefined,
-          description: productDialog.kind === "pop" ? productFormData.description : undefined,
+          flavor: nullableText(productDialog.kind === "pop", productFormData.flavor),
+          description: nullableText(productDialog.kind === "pop", productFormData.description),
           kind: productDialog.kind,
           unit: productFormData.unit,
-          category: productDialog.kind === "material" ? productFormData.category : undefined,
-          product_line: productDialog.kind === "pop" ? productFormData.product_line : undefined,
-          format: productDialog.kind === "pop" ? productFormData.format : undefined,
+          category: nullableText(productDialog.kind === "material", productFormData.category),
+          product_line: nullableText(productDialog.kind === "pop", productFormData.product_line),
+          format: nullableText(productDialog.kind === "pop", productFormData.format),
           base_quantity: productFormData.base_quantity,
           is_composite: components.length > 0,
           min_quantity: productFormData.is_composite ? productFormData.min_quantity : 0,
@@ -454,12 +468,12 @@ export function SettingsPage() {
         await updateProduct(productDialog.item.id, {
           code: productFormData.code,
           name: productFormData.name,
-          flavor: productDialog.kind === "pop" ? productFormData.flavor : undefined,
-          description: productDialog.kind === "pop" ? productFormData.description : undefined,
+          flavor: nullableText(productDialog.kind === "pop", productFormData.flavor),
+          description: nullableText(productDialog.kind === "pop", productFormData.description),
           unit: productFormData.unit,
-          category: productDialog.kind === "material" ? productFormData.category : undefined,
-          product_line: productDialog.kind === "pop" ? productFormData.product_line : undefined,
-          format: productDialog.kind === "pop" ? productFormData.format : undefined,
+          category: nullableText(productDialog.kind === "material", productFormData.category),
+          product_line: nullableText(productDialog.kind === "pop", productFormData.product_line),
+          format: nullableText(productDialog.kind === "pop", productFormData.format),
           base_quantity: productFormData.base_quantity,
           is_composite: components.length > 0,
           min_quantity: productFormData.is_composite ? productFormData.min_quantity : 0,
@@ -554,7 +568,7 @@ export function SettingsPage() {
   const openEditLocation = (item: Location) => {
     setFormData({
       name: item.name,
-      type: item.type as LocationType,
+      type: item.type,
       requires_box: item.requires_box !== false,
     });
     setLocationDialog({ open: true, mode: "edit", item });
@@ -1521,7 +1535,7 @@ export function SettingsPage() {
               <Label className="text-sm">Tipo</Label>
               <CreatableSelect
                 value={formData.type}
-                onChange={(value) => setFormData({ ...formData, type: value })}
+                onChange={(value) => setFormData({ ...formData, type: asLocationType(value) })}
                 options={locationTypes}
                 onCreateOption={handleCreateLocationType}
                 onEditOption={handleEditLocationType}

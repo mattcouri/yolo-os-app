@@ -22,9 +22,7 @@ export function GestaoDashboardPage() {
   const openOrders = orders.filter(
     (o) => o.status !== "completed" && o.status !== "cancelled"
   ).length;
-  const activeSeparations = separationJobs.filter(
-    (j) => j.stage !== "completed" && j.stage !== "cancelled"
-  ).length;
+  const activeSeparations = separationJobs.filter((j) => j.stage !== "retorno").length;
 
   const aaaUnits = stock
     .filter((s) => s.grade === "AAA")
@@ -166,7 +164,7 @@ export function GestaoDashboardPage() {
                 {separationJobs.slice(0, 5).map((job) => (
                   <div key={job.id} className="flex items-center justify-between">
                     <span className="font-medium text-sm">
-                      {job.order_number}
+                      {orders.find((order) => order.id === job.order_id)?.order_number || "—"}
                     </span>
                     <Badge variant="outline">{job.stage}</Badge>
                   </div>

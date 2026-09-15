@@ -18,20 +18,21 @@ export function ResetPasswordPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
+    const client = supabase;
+    if (!isSupabaseConfigured || !client) {
       setChecking(false);
       return;
     }
 
     let cancelled = false;
     const finish = async () => {
-      const { data } = await supabase.auth.getSession();
+      const { data } = await client.auth.getSession();
       if (cancelled) return;
       setHasSession(Boolean(data.session));
       setChecking(false);
     };
 
-    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data } = client.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY" || session) {
         setHasSession(true);
         setChecking(false);
