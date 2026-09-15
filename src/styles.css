@@ -96,6 +96,22 @@ html {
   overscroll-behavior: none;
 }
 
+@media print {
+  header,
+  footer {
+    display: none !important;
+  }
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}
+
 .disable-transitions * {
   transition: none !important;
+}
+
+.pac-container {
+  z-index: 10000 !important;
 }

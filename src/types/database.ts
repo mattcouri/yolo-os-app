@@ -377,6 +377,7 @@ export interface Order {
   needed_date: string;
   needed_time: string;
   fulfillment: FulfillmentMethod;
+  pickup_fulfillment: FulfillmentMethod | null;
   address: string | null;
   event_name: string | null;
   event_start: string | null;
@@ -501,6 +502,13 @@ export interface UniformCheckout {
   created_at: string;
 }
 
+export interface Vehicle {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -613,6 +621,11 @@ export interface Database {
         Row: UniformCheckout;
         Insert: Omit<UniformCheckout, 'id' | 'created_at'>;
         Update: Partial<Omit<UniformCheckout, 'id' | 'created_at'>>;
+      };
+      vehicles: {
+        Row: Vehicle;
+        Insert: Omit<Vehicle, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<Vehicle, 'id' | 'created_at' | 'updated_at'>>;
       };
       profiles: {
         Row: Profile;

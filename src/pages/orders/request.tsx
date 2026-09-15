@@ -1,841 +1,889 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, Plus, Trash2, CheckCircle2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { ArrowRight, Plus, Trash2, CheckCircle2, IceCream, Package, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { AddressSearch } from "@/components/ui/address-search";
+import { TimeSelect } from "@/components/ui/time-select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { KitPicker, type UniformPick } from "@/components/orders/kit-picker";
 import { useAppStore } from "@/stores";
-import type { OrderType, FulfillmentMethod, PhysicalState, UniformSize } from "@/types/database";
-import { UNIFORM_SIZES, availableForSize } from "@/lib/uniforms";
+import { useAuthProfile } from "@/lib/auth";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import type { FulfillmentMethod, OrderType, PhysicalState, Profile, UniformSize } from "@/types/database";
+import { UNIFORM_SIZES } from "@/lib/uniforms";
+import { checkoutStaysOut, availableForSizeOnWindow, equipmentBlock } from "@/lib/kit-availability";
 
-const orderTypes: { value: OrderType; label: string }[] = [
-  { value: "venda", label: "Venda" },
-  { value: "evento", label: "Evento" },
-  { value: "amostra", label: "Amostra" },
-  { value: "solicitacao_interna", label: "Solicitação interna" },
-  { value: "consignacao", label: "Consignação / reposição" },
-  { value: "emprestimo_equipamentos", label: "Empréstimo de equipamentos" },
-  { value: "troca_devolucao", label: "Troca / devolução" },
-  { value: "doacao_patrocinio", label: "Doação / patrocínio" },
-  { value: "material_promocional", label: "Material promocional" },
-  { value: "outro", label: "Outro" },
+const REQUEST_TYPES: { value: OrderType; label: string; hint: string }[] = [
+  { value: "venda", label: "Venda", hint: "Cliente paga" },
+  { value: "evento", label: "Evento", hint: "Com retorno" },
+  { value: "amostra", label: "Amostra", hint: "Cortesia" },
+  { value: "solicitacao_interna", label: "Interna", hint: "Uso YOLO" },
 ];
 
-const fulfillmentMethods: { value: FulfillmentMethod; label: string }[] = [
-  { value: "entrega_yolo", label: "Entrega YOLO" },
-  { value: "retirada_yolo", label: "Retirada em YOLO" },
-  { value: "uso_interno", label: "Uso dentro da YOLO" },
-  { value: "transportadora", label: "Transportadora / terceiro" },
-];
+type LineKind = "pop" | "material";
 
-interface OrderItem {
+interface OrderLine {
   id: string;
+  kind: LineKind;
   productId: string;
   quantity: string;
-  state: string;
+  state: "" | PhysicalState;
 }
+
+const emptyLine = (kind: LineKind): OrderLine => ({
+  id: crypto.randomUUID(),
+  kind,
+  productId: "",
+  quantity: "",
+  state: kind === "pop" ? "liquid" : "",
+});
+
+function tomorrowIso() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return date.toISOString().split("T")[0];
+}
+
+function toLocalInput(value?: string | null) {
+  if (!value) return "";
+  return value.length >= 16 ? value.slice(0, 16) : value;
+}
+
+function splitDateTime(value?: string | null) {
+  const local = toLocalInput(value);
+  if (!local) return { date: "", time: "" };
+  return {
+    date: local.slice(0, 10),
+    time: local.length >= 16 ? local.slice(11, 16) : "",
+  };
+}
+
+function joinDateTime(date: string, time: string) {
+  if (!date || !time) return "";
+  return `${date}T${time}`;
+}
+
+const selectClass = "flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm";
+
+const DELIVERY_METHODS: { value: FulfillmentMethod; label: string }[] = [
+  { value: "entrega_yolo", label: "Entrega YOLO" },
+  { value: "retirada_yolo", label: "Retirada no CD" },
+  { value: "uso_interno", label: "Uso interno" },
+  { value: "transportadora", label: "Transportadora" },
+];
+
+const PICKUP_METHODS: { value: FulfillmentMethod; label: string }[] = [
+  { value: "entrega_yolo", label: "Coleta YOLO" },
+  { value: "retirada_yolo", label: "Devolução no CD" },
+  { value: "uso_interno", label: "Não se aplica" },
+  { value: "transportadora", label: "Transportadora" },
+];
 
 export function OrderRequestPage() {
   const navigate = useNavigate();
-  const { products, assets, equipmentReservations, uniforms, uniformCheckouts, createOrder } = useAppStore();
+  const { orderId } = useParams();
+  const { profile } = useAuthProfile();
+  const {
+    products,
+    assets,
+    equipmentReservations,
+    uniforms,
+    uniformCheckouts,
+    orders,
+    orderItems,
+    createOrder,
+    updatePlacedOrder,
+    fetchProducts,
+    fetchAssets,
+    fetchUniforms,
+    fetchEquipmentReservations,
+    fetchOrders,
+  } = useAppStore();
 
-  const popProducts = products.filter((p) => p.kind === "pop");
-  const materialProducts = products.filter((p) => p.kind === "material");
-  const equipmentProducts = products.filter((p) => p.kind === "equipment_service");
-  const allProducts = [...popProducts, ...materialProducts, ...equipmentProducts];
-
-  const equipmentAssets = assets.filter(
-    (a) =>
-      a.type !== "caixa_preta" &&
-      a.type !== "caixa_media" &&
-      a.type !== "caixa_grande" &&
-      a.control_method !== "quantity"
+  const pops = useMemo(
+    () => products.filter((p) => p.kind === "pop" && p.is_active !== false),
+    [products]
+  );
+  const materials = useMemo(
+    () => products.filter((p) => p.kind === "material" && p.is_active !== false),
+    [products]
+  );
+  const equipmentAssets = useMemo(
+    () =>
+      assets.filter(
+        (a) =>
+          a.is_active &&
+          a.type !== "caixa_preta" &&
+          a.type !== "caixa_media" &&
+          a.type !== "caixa_grande" &&
+          a.control_method !== "quantity"
+      ),
+    [assets]
   );
 
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = tomorrow.toISOString().split("T")[0];
-
-  const [requester, setRequester] = useState("");
+  const [orderType, setOrderType] = useState<OrderType>("venda");
+  const [people, setPeople] = useState<Profile[]>([]);
+  const [requesterId, setRequesterId] = useState(profile?.id || "");
+  const [requesterName, setRequesterName] = useState(profile?.full_name || "");
   const [organization, setOrganization] = useState("");
   const [recipient, setRecipient] = useState("");
   const [recipientContact, setRecipientContact] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
-
-  const [orderType, setOrderType] = useState<OrderType>("venda");
-  const [neededDate, setNeededDate] = useState(tomorrowStr);
-  const [neededTime, setNeededTime] = useState("");
+  const [neededDate, setNeededDate] = useState(tomorrowIso);
+  const [neededTime, setNeededTime] = useState("10:00");
   const [fulfillment, setFulfillment] = useState<FulfillmentMethod>("entrega_yolo");
   const [address, setAddress] = useState("");
-
   const [eventName, setEventName] = useState("");
-  const [eventStart, setEventStart] = useState("");
-  const [eventEnd, setEventEnd] = useState("");
-  const [pickupAt, setPickupAt] = useState("");
-  const [onsiteContact, setOnsiteContact] = useState("");
-  const [audience, setAudience] = useState("");
-
-  const [reserveFrom, setReserveFrom] = useState("");
-  const [reserveUntil, setReserveUntil] = useState("");
-  const [selectedEquipment, setSelectedEquipment] = useState<string[]>([]);
-  const [uniformQty, setUniformQty] = useState<Record<string, Partial<Record<UniformSize, string>>>>({});
-
-  const [items, setItems] = useState<OrderItem[]>([
-    { id: "1", productId: popProducts[0]?.id || "", quantity: "1", state: "" },
-  ]);
-  const [itemNotes, setItemNotes] = useState("");
-
-  const [reference, setReference] = useState("");
-  const [returnDescription, setReturnDescription] = useState("");
-
-  const [paymentTerms, setPaymentTerms] = useState("À vista");
-  const [billable, setBillable] = useState<"yes" | "no" | "review">("yes");
-  const [noChargeReason, setNoChargeReason] = useState("");
+  const [eventStartDate, setEventStartDate] = useState("");
+  const [eventStartTime, setEventStartTime] = useState("");
+  const [eventEndDate, setEventEndDate] = useState("");
+  const [eventEndTime, setEventEndTime] = useState("");
+  const [pickupFulfillment, setPickupFulfillment] = useState<FulfillmentMethod>("entrega_yolo");
+  const [pickupDate, setPickupDate] = useState("");
+  const [pickupTime, setPickupTime] = useState("");
+  const [lines, setLines] = useState<OrderLine[]>([]);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  const [returningAssetIds, setReturningAssetIds] = useState<string[]>([]);
+  const [selectedUniforms, setSelectedUniforms] = useState<Record<string, UniformPick>>({});
+  const [returningUniformIds, setReturningUniformIds] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
-
+  const [billable, setBillable] = useState<"yes" | "no">("yes");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [hydratedId, setHydratedId] = useState<string | null>(null);
 
+  const editingOrder = orderId ? orders.find((row) => row.id === orderId) : undefined;
+  const isEditing = Boolean(orderId);
   const isEvent = orderType === "evento";
-  const isEquipmentLoan = orderType === "emprestimo_equipamentos";
-  const isReturn = orderType === "troca_devolucao";
-  const showEquipmentSection = isEvent || isEquipmentLoan;
-  const showUniformsSection = isEvent;
+  const isInternal = orderType === "solicitacao_interna";
+  const needsAddress = fulfillment !== "uso_interno" && fulfillment !== "retirada_yolo";
 
-  const addItem = () => {
-    setItems([
-      ...items,
-      {
-        id: String(Date.now()),
-        productId: popProducts[0]?.id || "",
-        quantity: "1",
-        state: "",
-      },
-    ]);
-  };
+  useEffect(() => {
+    void fetchProducts();
+    void fetchAssets();
+    void fetchUniforms();
+    void fetchEquipmentReservations();
+    void fetchOrders();
+  }, [fetchProducts, fetchAssets, fetchUniforms, fetchEquipmentReservations, fetchOrders]);
 
-  const removeItem = (id: string) => {
-    if (items.length > 1) {
-      setItems(items.filter((item) => item.id !== id));
+  useEffect(() => {
+    if (profile?.id) {
+      setRequesterId((current) => current || profile.id);
+      setRequesterName((current) => current || profile.full_name);
     }
+  }, [profile]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadPeople = async () => {
+      if (!isSupabaseConfigured || !supabase) {
+        if (profile) setPeople([profile]);
+        return;
+      }
+      const { data } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, role, active, created_at, updated_at")
+        .eq("active", true)
+        .order("full_name");
+      if (cancelled) return;
+      const rows = (data || []) as Profile[];
+      setPeople(rows.length ? rows : profile ? [profile] : []);
+    };
+    void loadPeople();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile]);
+
+  useEffect(() => {
+    if (orderId) return;
+    if (orderType === "venda") {
+      setBillable("yes");
+      setFulfillment("entrega_yolo");
+    } else if (orderType === "evento") {
+      setBillable("yes");
+      setFulfillment("entrega_yolo");
+    } else if (orderType === "amostra") {
+      setBillable("no");
+      setFulfillment("entrega_yolo");
+    } else {
+      setBillable("no");
+      setFulfillment("uso_interno");
+      setOrganization((current) => current || "YOLO");
+    }
+  }, [orderType, orderId]);
+
+  const pickerReservations = useMemo(
+    () => equipmentReservations.filter((row) => row.order_id !== orderId),
+    [equipmentReservations, orderId]
+  );
+  const pickerCheckouts = useMemo(
+    () => uniformCheckouts.filter((row) => row.order_id !== orderId),
+    [uniformCheckouts, orderId]
+  );
+  const pickerAssets = useMemo(
+    () =>
+      equipmentAssets.map((asset) =>
+        orderId &&
+        asset.status === "in_use" &&
+        orderItems.some((item) => item.order_id === orderId && item.asset_id === asset.id)
+          ? { ...asset, status: "available" as const }
+          : asset
+      ),
+    [equipmentAssets, orderId, orderItems]
+  );
+
+  const eventStart = joinDateTime(eventStartDate, eventStartTime);
+  const eventEnd = joinDateTime(eventEndDate, eventEndTime);
+  const pickupAt = joinDateTime(pickupDate, pickupTime);
+
+  const reserveFrom = isEvent && eventStart ? eventStart : `${neededDate}T${neededTime || "08:00"}`;
+  const reserveUntil =
+    isEvent && (pickupAt || eventEnd) ? pickupAt || eventEnd : `${neededDate}T23:59`;
+
+  useEffect(() => {
+    if (!editingOrder || hydratedId === editingOrder.id) return;
+    setOrderType(editingOrder.order_type);
+    setRequesterId(editingOrder.requester_id || "");
+    setRequesterName(editingOrder.requester_name);
+    setOrganization(editingOrder.organization);
+    setRecipient(editingOrder.recipient_name);
+    setRecipientContact(editingOrder.recipient_contact);
+    setRecipientEmail(editingOrder.recipient_email || "");
+    setNeededDate(editingOrder.needed_date);
+    setNeededTime(editingOrder.needed_time?.slice(0, 5) || "10:00");
+    setFulfillment(editingOrder.fulfillment);
+    setPickupFulfillment(editingOrder.pickup_fulfillment || "entrega_yolo");
+    setAddress(editingOrder.address || "");
+    setEventName(editingOrder.event_name || "");
+    const start = splitDateTime(editingOrder.event_start);
+    setEventStartDate(start.date);
+    setEventStartTime(start.time);
+    const end = splitDateTime(editingOrder.event_end);
+    setEventEndDate(end.date);
+    setEventEndTime(end.time);
+    const pickup = splitDateTime(editingOrder.pickup_at);
+    setPickupDate(pickup.date);
+    setPickupTime(pickup.time);
+    setNotes(editingOrder.notes || "");
+    setBillable(editingOrder.billable === "no" ? "no" : "yes");
+    const items = orderItems.filter((item) => item.order_id === editingOrder.id);
+    setLines(
+      items
+        .filter((item) => item.product_id)
+        .map((item) => {
+          const product = products.find((row) => row.id === item.product_id);
+          return {
+            id: item.id,
+            kind: (product?.kind === "material" ? "material" : "pop") as LineKind,
+            productId: item.product_id || "",
+            quantity: String(item.quantity),
+            state: (item.requested_state || (product?.kind === "material" ? "" : "liquid")) as OrderLine["state"],
+          };
+        })
+    );
+    const equipment = items.filter((item) => item.asset_id);
+    setSelectedAssetIds(equipment.map((item) => item.asset_id!));
+    setReturningAssetIds(equipment.filter((item) => item.is_returnable).map((item) => item.asset_id!));
+    const mine = uniformCheckouts.filter((row) => row.order_id === editingOrder.id && row.status === "out");
+    const picks: Record<string, UniformPick> = {};
+    const returning: string[] = [];
+    for (const checkout of mine) {
+      picks[checkout.uniform_id] = {
+        ...picks[checkout.uniform_id],
+        [checkout.size]: (picks[checkout.uniform_id]?.[checkout.size] || 0) + checkout.quantity,
+      };
+    }
+    for (const uniformId of Object.keys(picks)) {
+      if (mine.some((row) => row.uniform_id === uniformId && !checkoutStaysOut(row))) returning.push(uniformId);
+    }
+    setSelectedUniforms(picks);
+    setReturningUniformIds(returning);
+    setHydratedId(editingOrder.id);
+  }, [editingOrder, hydratedId, orderItems, products, uniformCheckouts]);
+
+  useEffect(() => {
+    setSelectedAssetIds((current) => {
+      const next = current.filter((id) => {
+        const asset = pickerAssets.find((row) => row.id === id);
+        return asset ? !equipmentBlock(asset, pickerReservations, reserveFrom, reserveUntil) : false;
+      });
+      if (next.length === current.length && next.every((id, index) => id === current[index])) return current;
+      return next;
+    });
+    setReturningAssetIds((current) =>
+      current.filter((id) => {
+        const asset = pickerAssets.find((row) => row.id === id);
+        return asset ? !equipmentBlock(asset, pickerReservations, reserveFrom, reserveUntil) : false;
+      })
+    );
+    setSelectedUniforms((current) => {
+      const next: Record<string, UniformPick> = {};
+      for (const [uniformId, pick] of Object.entries(current)) {
+        const uniform = uniforms.find((row) => row.id === uniformId);
+        if (!uniform) continue;
+        const kept: UniformPick = {};
+        for (const size of UNIFORM_SIZES) {
+          const qty = pick[size] || 0;
+          if (qty <= 0) continue;
+          const available = availableForSizeOnWindow(
+            uniform,
+            size,
+            pickerCheckouts,
+            orders,
+            reserveFrom,
+            reserveUntil
+          );
+          if (available > 0) kept[size] = Math.min(qty, available);
+        }
+        if (Object.keys(kept).length) next[uniformId] = kept;
+      }
+      const currentKeys = Object.keys(current);
+      const nextKeys = Object.keys(next);
+      if (
+        currentKeys.length === nextKeys.length &&
+        nextKeys.every((id) => JSON.stringify(current[id]) === JSON.stringify(next[id]))
+      ) {
+        return current;
+      }
+      return next;
+    });
+  }, [reserveFrom, reserveUntil, pickerAssets, pickerReservations, uniforms, pickerCheckouts, orders]);
+
+  const addLine = (kind: LineKind) => {
+    const line = emptyLine(kind);
+    if (kind === "pop") line.productId = pops[0]?.id || "";
+    if (kind === "material") line.productId = materials[0]?.id || "";
+    setLines((current) => [...current, line]);
   };
 
-  const updateItem = (id: string, field: keyof OrderItem, value: string) => {
-    setItems(
-      items.map((item) => (item.id === id ? { ...item, [field]: value } : item))
-    );
-  };
-
-  const getProduct = (productId: string) => allProducts.find((p) => p.id === productId);
-
-  const hasConflict = (assetId: string) => {
-    if (!reserveFrom || !reserveUntil) return false;
-    return equipmentReservations.some(
-      (r) =>
-        r.asset_id === assetId &&
-        r.status === "active" &&
-        reserveFrom < r.reserved_until &&
-        reserveUntil > r.reserved_from
-    );
+  const updateLine = (id: string, patch: Partial<OrderLine>) => {
+    setLines((current) => current.map((line) => (line.id === id ? { ...line, ...patch } : line)));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
-    if (!requester) {
-      setError("Selecione o solicitante YOLO.");
+    if (!requesterName.trim()) {
+      setError("Selecione o solicitante.");
       return;
     }
-
     if (!organization.trim() || !recipient.trim() || !recipientContact.trim()) {
-      setError("Preencha o destinatário e o contato de entrega.");
+      setError("Preencha empresa, quem recebe e o contato.");
       return;
     }
-
-    if (!neededDate || !neededTime.trim()) {
-      setError("Informe a data e a janela de entrega.");
+    if (!neededDate || !neededTime) {
+      setError("Informe o dia e o horário.");
       return;
     }
-
-    if (items.length === 0) {
-      setError("Adicione pelo menos um item.");
+    if (needsAddress && !address.trim()) {
+      setError("Informe o endereço no Maps.");
       return;
     }
-
-    if (fulfillment !== "uso_interno" && !address.trim()) {
-      setError("Informe o endereço completo.");
+    if (isEvent && (!eventName.trim() || !eventStart || !eventEnd)) {
+      setError("Evento precisa de nome, início (dia e hora) e fim (dia e hora).");
       return;
     }
-
-    if (isEvent && (!eventName || !eventStart || !eventEnd || !pickupAt || !onsiteContact)) {
-      setError("Complete os horários e o contato do evento.");
+    if (isEvent && !pickupAt) {
+      setError("Informe o dia e a hora da retirada.");
       return;
     }
-
-    if (showEquipmentSection && selectedEquipment.length > 0) {
-      if (!reserveFrom || !reserveUntil || reserveFrom >= reserveUntil) {
-        setError("Informe um período válido para reservar os equipamentos.");
-        return;
-      }
-    }
-
-    const uniformLines = Object.entries(uniformQty).flatMap(([uniformId, sizes]) =>
-      UNIFORM_SIZES.map((size) => ({
-        uniform_id: uniformId,
-        size,
-        quantity: Number(sizes[size] || 0),
-      })).filter((line) => line.quantity > 0)
-    );
-
-    if (showUniformsSection) {
-      for (const line of uniformLines) {
-        const uniform = uniforms.find((u) => u.id === line.uniform_id);
-        if (!uniform) continue;
-        const available = availableForSize(uniform, line.size, uniformCheckouts);
-        if (line.quantity > available) {
-          setError(`${uniform.name} tamanho ${line.size}: só há ${available} disponível${available === 1 ? "" : "is"}.`);
+    const equipmentIds = selectedAssetIds.filter((id) => {
+      const asset = pickerAssets.find((row) => row.id === id);
+      return asset && !equipmentBlock(asset, pickerReservations, reserveFrom, reserveUntil);
+    });
+    const uniformLines: { uniform_id: string; size: UniformSize; quantity: number; returns: boolean }[] = [];
+    for (const [uniformId, pick] of Object.entries(selectedUniforms)) {
+      const uniform = uniforms.find((row) => row.id === uniformId);
+      if (!uniform) continue;
+      for (const size of UNIFORM_SIZES) {
+        const qty = pick[size] || 0;
+        if (qty <= 0) continue;
+        const available = availableForSizeOnWindow(
+          uniform,
+          size,
+          pickerCheckouts,
+          orders,
+          reserveFrom,
+          reserveUntil
+        );
+        if (qty > available) {
+          setError(`${uniform.name} ${size}: só há ${available} disponível${available === 1 ? "" : "is"} nesta data.`);
           return;
         }
+        uniformLines.push({
+          uniform_id: uniform.id,
+          size,
+          quantity: qty,
+          returns: returningUniformIds.includes(uniform.id),
+        });
       }
     }
 
-    if (isReturn && !reference.trim()) {
-      setError("Informe o pedido, nota ou evento de origem.");
+    if (lines.length === 0 && equipmentIds.length === 0 && uniformLines.length === 0) {
+      setError("Adicione um SKU ou marque um equipamento / uniforme.");
       return;
     }
 
-    if (billable !== "yes" && !noChargeReason.trim()) {
-      setError("Explique o motivo ou informe o centro de custo.");
-      return;
+    const items: {
+      product_id?: string;
+      asset_id?: string;
+      name: string;
+      code: string;
+      quantity: number;
+      unit: string;
+      requested_state?: PhysicalState;
+      is_returnable: boolean;
+    }[] = [];
+
+    for (const line of lines) {
+      const qty = Number(line.quantity);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        setError("Informe quantidade válida em todos os SKUs.");
+        return;
+      }
+      const product = products.find((p) => p.id === line.productId);
+      if (!product) {
+        setError("Selecione um SKU ou material válido.");
+        return;
+      }
+      items.push({
+        product_id: product.id,
+        name: product.flavor || product.name,
+        code: product.code,
+        quantity: qty,
+        unit: product.unit || "un",
+        requested_state: line.kind === "pop" ? line.state || "liquid" : undefined,
+        is_returnable: false,
+      });
+    }
+
+    for (const assetId of equipmentIds) {
+      const asset = equipmentAssets.find((row) => row.id === assetId);
+      if (!asset) continue;
+      items.push({
+        asset_id: asset.id,
+        name: asset.name,
+        code: asset.code,
+        quantity: 1,
+        unit: "un",
+        is_returnable: returningAssetIds.includes(asset.id),
+      });
+    }
+
+    for (const line of uniformLines) {
+      const uniform = uniforms.find((row) => row.id === line.uniform_id);
+      items.push({
+        name: `${uniform?.name || "Uniforme"} · ${line.size}`,
+        code: `UNI-${line.size}`,
+        quantity: line.quantity,
+        unit: "un",
+        is_returnable: line.returns,
+      });
     }
 
     setIsSubmitting(true);
-
     try {
-      const orderItems = items.map((item) => {
-        const product = getProduct(item.productId);
-        return {
-          product_id: item.productId,
-          name: product?.name || "",
-          code: product?.code || "",
-          quantity: Number(item.quantity),
-          unit: product?.unit || "un",
-          requested_state: (item.state || undefined) as PhysicalState | undefined,
-          is_returnable: false,
-        };
-      });
-
-      for (const assetId of selectedEquipment) {
-        const asset = equipmentAssets.find((a) => a.id === assetId);
-        orderItems.push({
-          product_id: undefined,
-          asset_id: assetId,
-          name: asset?.name || "",
-          code: asset?.code || "",
-          quantity: 1,
-          unit: "un",
-          requested_state: undefined,
-          is_returnable: true,
-        } as any);
-      }
-
-      for (const line of uniformLines) {
-        const uniform = uniforms.find((u) => u.id === line.uniform_id);
-        orderItems.push({
-          product_id: undefined,
-          name: `${uniform?.name || "Uniforme"} · ${line.size}`,
-          code: `UNI-${line.size}`,
-          quantity: line.quantity,
-          unit: "un",
-          requested_state: undefined,
-          is_returnable: true,
-        } as any);
-      }
-
-      const order = await createOrder({
-        requester_name: requester,
+      const payload = {
+        requester_id: requesterId || undefined,
+        requester_name: requesterName.trim(),
         organization: organization.trim(),
         recipient_name: recipient.trim(),
         recipient_contact: recipientContact.trim(),
         recipient_email: recipientEmail.trim() || undefined,
         order_type: orderType,
         needed_date: neededDate,
-        needed_time: neededTime.trim(),
+        needed_time: neededTime,
         fulfillment,
-        address: address.trim() || undefined,
-        event_name: eventName.trim() || undefined,
-        event_start: eventStart || undefined,
-        event_end: eventEnd || undefined,
-        pickup_at: pickupAt || undefined,
-        onsite_contact: onsiteContact.trim() || undefined,
-        audience: audience ? Number(audience) : undefined,
-        reserve_from: reserveFrom || undefined,
-        reserve_until: reserveUntil || undefined,
-        payment_terms: paymentTerms,
+        pickup_fulfillment: isEvent ? pickupFulfillment : undefined,
+        address: needsAddress ? address.trim() : undefined,
+        event_name: isEvent ? eventName.trim() : undefined,
+        event_start: isEvent ? eventStart : undefined,
+        event_end: isEvent ? eventEnd : undefined,
+        pickup_at: isEvent ? pickupAt || undefined : undefined,
+        onsite_contact: isEvent ? recipientContact.trim() : undefined,
+        reserve_from: equipmentIds.length || uniformLines.length ? reserveFrom : undefined,
+        reserve_until: equipmentIds.length || uniformLines.length ? reserveUntil : undefined,
         billable,
-        no_charge_reason: noChargeReason.trim() || undefined,
-        reference: reference.trim() || undefined,
-        return_description: returnDescription.trim() || undefined,
-        item_notes: itemNotes.trim() || undefined,
+        no_charge_reason: billable === "yes" ? undefined : orderType === "amostra" ? "Amostra" : isInternal ? "Uso interno" : "Evento",
         notes: notes.trim() || undefined,
-        items: orderItems,
-        equipment_ids: selectedEquipment.length > 0 ? selectedEquipment : undefined,
-        uniforms: showUniformsSection && uniformLines.length > 0 ? uniformLines : undefined,
+        items,
+        equipment_ids: equipmentIds.length ? equipmentIds : undefined,
+        returning_equipment_ids: equipmentIds.filter((id) => returningAssetIds.includes(id)),
+        uniforms: uniformLines.length ? uniformLines : undefined,
+      };
+      const order =
+        isEditing && orderId ? await updatePlacedOrder(orderId, payload) : await createOrder(payload);
+      navigate("/pedidos/lista", {
+        state: {
+          toast: isEditing
+            ? `${order.order_number} atualizado.`
+            : `${order.order_number} enviado para Separação.`,
+        },
       });
-
-      navigate("/orders/success", { state: { order } });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao enviar pedido");
+      setError(err instanceof Error ? err.message : "Não foi possível salvar o pedido.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  return (
-    <div className="max-w-3xl mx-auto pb-12">
-      <Link
-        to="/orders"
-        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mt-6"
-      >
-        <ArrowRight className="w-4 h-4 rotate-180" />
-        Pedidos
-      </Link>
+  if (orderId && orders.length > 0 && !editingOrder) {
+    return (
+      <div className="mx-auto max-w-2xl py-12 text-center">
+        <p className="text-muted-foreground">Pedido não encontrado.</p>
+        <Link to="/pedidos/lista" className="text-primary hover:underline">
+          Voltar
+        </Link>
+      </div>
+    );
+  }
 
-      <div className="py-6">
-        <span className="text-xs font-semibold text-primary tracking-wider uppercase">
-          NOVA SOLICITAÇÃO
-        </span>
-        <h1 className="text-2xl md:text-3xl font-bold mt-2">
-          Pedido para Operações
+  return (
+    <div className="mx-auto max-w-2xl pb-16">
+      <Link to="/pedidos/lista" className="mt-6 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowRight className="h-4 w-4 rotate-180" />
+        Acompanhar
+      </Link>
+      <div className="py-5">
+        <h1 className="text-2xl font-bold md:text-3xl">
+          {isEditing ? `Editar ${editingOrder?.order_number || "pedido"}` : "Nova solicitação"}
         </h1>
-        <p className="text-muted-foreground mt-1">
-          Preencha quem solicita, quem recebe, o que precisa e quando.
+        <p className="mt-1 text-sm text-muted-foreground">
+          {isEditing
+            ? "O mesmo ID permanece. Alterações vão para Separação."
+            : "Entra direto no quadro de Separação. Estoque só sai quando Operações conferir."}
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <Card className="border-t-4 border-t-primary">
-          <CardHeader>
-            <CardTitle className="text-lg">1. Solicitante YOLO</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2 max-w-md">
-              <Label>Quem está solicitando?</Label>
-              <select
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                value={requester}
-                onChange={(e) => setRequester(e.target.value)}
-                required
-              >
-                <option value="">Selecione a pessoa</option>
-                <option>Comercial · usuário demo</option>
-                <option>Operações · usuário demo</option>
-                <option>Gestão · usuário demo</option>
-              </select>
-              <p className="text-xs text-muted-foreground">
-                Esta é a pessoa interna responsável pelo pedido.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
+      <form onSubmit={handleSubmit} className="space-y-4">
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">2. Destinatário e contato</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label>Cliente, empresa ou área</Label>
-                <Input
-                  value={organization}
-                  onChange={(e) => setOrganization(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Quem vai receber?</Label>
-                <Input
-                  value={recipient}
-                  onChange={(e) => setRecipient(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Telefone / WhatsApp</Label>
-                <Input
-                  value={recipientContact}
-                  onChange={(e) => setRecipientContact(e.target.value)}
-                  required
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>E-mail do destinatário</Label>
-                <Input
-                  type="email"
-                  value={recipientEmail}
-                  onChange={(e) => setRecipientEmail(e.target.value)}
-                />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">3. Tipo e entrega</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label>Tipo de pedido</Label>
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={orderType}
-                  onChange={(e) => setOrderType(e.target.value as OrderType)}
+          <CardContent className="space-y-4 p-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {REQUEST_TYPES.map((type) => (
+                <button
+                  key={type.value}
+                  type="button"
+                  onClick={() => setOrderType(type.value)}
+                  className={`rounded-xl border px-2 py-2.5 text-left transition ${
+                    orderType === type.value ? "border-primary bg-primary/10" : "hover:border-primary/40"
+                  }`}
                 >
-                  {orderTypes.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
+                  <span className="block text-sm font-semibold">{type.label}</span>
+                  <span className="text-[11px] text-muted-foreground">{type.hint}</span>
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Solicitante</Label>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={requesterId || requesterName}
+                  onChange={(e) => {
+                    const person = people.find((row) => row.id === e.target.value);
+                    setRequesterId(person?.id || "");
+                    setRequesterName(person?.full_name || e.target.value);
+                  }}
+                  required
+                >
+                  <option value="">Selecione</option>
+                  {people.map((person) => (
+                    <option key={person.id} value={person.id}>
+                      {person.full_name}
                     </option>
                   ))}
+                  {profile && !people.some((row) => row.id === profile.id) && (
+                    <option value={profile.id}>{profile.full_name}</option>
+                  )}
                 </select>
               </div>
-              <div className="space-y-2">
-                <Label>Data de entrega / retirada</Label>
-                <Input
-                  type="date"
-                  min={tomorrowStr}
-                  value={neededDate}
-                  onChange={(e) => setNeededDate(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Janela de entrega</Label>
-                <Input
-                  placeholder="Ex.: 09h–12h"
-                  value={neededTime}
-                  onChange={(e) => setNeededTime(e.target.value)}
-                  required
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Como será atendido?</Label>
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={fulfillment}
-                  onChange={(e) => setFulfillment(e.target.value as FulfillmentMethod)}
-                >
-                  {fulfillmentMethods.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {fulfillment !== "uso_interno" && (
-                <div className="space-y-2">
-                  <Label>Endereço completo</Label>
-                  <Input
-                    placeholder="Rua, número, complemento, cidade"
-                    value={address}
-                    onChange={(e) => setAddress(e.target.value)}
-                  />
+              {(orderType === "venda" || isEvent) && (
+                <div className="space-y-1.5">
+                  <Label>Cobrar o cliente?</Label>
+                  <select
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={billable}
+                    onChange={(e) => setBillable(e.target.value as "yes" | "no")}
+                  >
+                    <option value="yes">Sim</option>
+                    <option value="no">Não</option>
+                  </select>
                 </div>
               )}
             </div>
           </CardContent>
         </Card>
 
-        {isEvent && (
-          <Card className="border-l-4 border-l-primary">
-            <CardHeader>
-              <CardTitle className="text-lg">4. Dados do evento</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <Label>Nome do evento</Label>
-                  <Input
-                    value={eventName}
-                    onChange={(e) => setEventName(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Início do evento</Label>
-                  <Input
-                    type="datetime-local"
-                    value={eventStart}
-                    onChange={(e) => setEventStart(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Fim do evento</Label>
-                  <Input
-                    type="datetime-local"
-                    value={eventEnd}
-                    onChange={(e) => setEventEnd(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Retirada no local</Label>
-                  <Input
-                    type="datetime-local"
-                    value={pickupAt}
-                    onChange={(e) => setPickupAt(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Contato no local</Label>
-                  <Input
-                    value={onsiteContact}
-                    onChange={(e) => setOnsiteContact(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Público estimado</Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={audience}
-                    onChange={(e) => setAudience(e.target.value)}
-                  />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">
-              {isEvent ? "5" : "4"}. Itens
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {items.map((item) => {
-              const product = getProduct(item.productId);
-              return (
-                <div
-                  key={item.id}
-                  className="grid grid-cols-[1fr_auto_auto_auto] gap-2 items-end border-b pb-4"
-                >
-                  <div className="space-y-2">
-                    <Label>Item</Label>
-                    <select
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      value={item.productId}
-                      onChange={(e) => updateItem(item.id, "productId", e.target.value)}
-                    >
-                      {allProducts.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} · {p.code}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Quantidade</Label>
-                    <Input
-                      type="number"
-                      min="0.001"
-                      step="0.001"
-                      value={item.quantity}
-                      onChange={(e) => updateItem(item.id, "quantity", e.target.value)}
-                      className="w-24"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Estado</Label>
-                    <select
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      value={item.state}
-                      onChange={(e) => updateItem(item.id, "state", e.target.value)}
-                    >
-                      <option value="">Não se aplica</option>
-                      <option value="liquid">Líquido</option>
-                      <option value="frozen">Congelado</option>
-                    </select>
-                  </div>
-                  {items.length > 1 && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => removeItem(item.id)}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  )}
-                </div>
-              );
-            })}
-            <Button type="button" variant="outline" onClick={addItem}>
-              <Plus className="w-4 h-4 mr-2" />
-              Adicionar item
-            </Button>
-            <div className="space-y-2">
-              <Label>Instruções de separação ou embalagem</Label>
-              <textarea
-                className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-y"
-                placeholder="Ex.: sabores variados; 300 pops congelados; caixa com encarte"
-                value={itemNotes}
-                onChange={(e) => setItemNotes(e.target.value)}
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        {showEquipmentSection && (
-          <Card className="border-l-4 border-l-primary">
-            <CardHeader>
-              <CardTitle className="text-lg">Equipamentos do evento</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Todos os equipamentos aparecem. Os já reservados no período ficam
-                esmaecidos e não podem ser escolhidos.
-              </p>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Reservar de</Label>
-                  <Input
-                    type="datetime-local"
-                    value={reserveFrom}
-                    onChange={(e) => setReserveFrom(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Reservar até</Label>
-                  <Input
-                    type="datetime-local"
-                    value={reserveUntil}
-                    onChange={(e) => setReserveUntil(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Inclua o horário previsto de retirada ou devolução.
-                  </p>
-                </div>
+          <CardContent className="space-y-3 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Quem recebe</p>
+            {isEvent && (
+              <div className="space-y-1.5">
+                <Label>Nome do evento</Label>
+                <Input value={eventName} onChange={(e) => setEventName(e.target.value)} required={isEvent} />
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                {equipmentAssets.map((asset) => {
-                  const conflict = hasConflict(asset.id);
-                  const isSelected = selectedEquipment.includes(asset.id);
-                  return (
-                    <label
-                      key={asset.id}
-                      className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer ${
-                        conflict ? "opacity-50 cursor-not-allowed" : ""
-                      } ${isSelected ? "border-primary bg-primary/5" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        disabled={conflict}
-                        checked={isSelected}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedEquipment([...selectedEquipment, asset.id]);
-                          } else {
-                            setSelectedEquipment(
-                              selectedEquipment.filter((id) => id !== asset.id)
-                            );
-                          }
-                        }}
-                        className="mt-1"
-                      />
-                      <div>
-                        <strong className="text-sm">{asset.name}</strong>
-                        <p className="text-xs text-muted-foreground">
-                          {asset.code} · {asset.type}
-                          <br />
-                          {conflict ? "Reservado no período" : "Disponível no período"}
-                        </p>
-                      </div>
-                    </label>
-                  );
-                })}
+            )}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Pessoa de contato</Label>
+                <Input value={recipient} onChange={(e) => setRecipient(e.target.value)} required />
               </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {showUniformsSection && uniforms.length > 0 && (
-          <Card className="border-l-4 border-l-primary">
-            <CardHeader>
-              <CardTitle className="text-lg">Uniformes do evento</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Informe quantas camisas saem em cada tamanho. Elas voltam ao estoque quando o evento é conferido no retorno.
-              </p>
-              <div className="grid gap-3 sm:grid-cols-2">
-                {uniforms.map((uniform) => (
-                  <div key={uniform.id} className="flex gap-3 rounded-lg border p-3">
-                    <div className="flex shrink-0 gap-1">
-                      {uniform.photo_url ? (
-                        <img src={uniform.photo_url} alt="Frente" className="h-12 w-12 rounded-md object-cover border" />
-                      ) : (
-                        <div className="h-12 w-12 rounded-md border bg-muted" />
-                      )}
-                      {uniform.photo_back_url ? (
-                        <img src={uniform.photo_back_url} alt="Costas" className="h-12 w-12 rounded-md object-cover border" />
-                      ) : null}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <strong className="text-sm">{uniform.name}</strong>
-                      <div className="mt-2 grid grid-cols-4 gap-1">
-                        {UNIFORM_SIZES.map((size) => {
-                          const available = availableForSize(uniform, size, uniformCheckouts);
-                          return (
-                            <div key={size} className="space-y-1">
-                              <div className="text-center text-[10px] text-muted-foreground">
-                                {size} · {available}
-                              </div>
-                              <Input
-                                type="number"
-                                min="0"
-                                max={available}
-                                className="h-8 px-1 text-center"
-                                value={uniformQty[uniform.id]?.[size] || ""}
-                                onChange={(e) =>
-                                  setUniformQty((prev) => ({
-                                    ...prev,
-                                    [uniform.id]: { ...prev[uniform.id], [size]: e.target.value },
-                                  }))
-                                }
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                ))}
+              <div className="space-y-1.5">
+                <Label>Empresa</Label>
+                <Input value={organization} onChange={(e) => setOrganization(e.target.value)} required />
               </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {isReturn && (
-          <Card className="border-l-4 border-l-primary">
-            <CardHeader>
-              <CardTitle className="text-lg">Referência da troca ou devolução</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Pedido / nota / evento de origem</Label>
-                  <Input
-                    value={reference}
-                    onChange={(e) => setReference(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>O que deve voltar?</Label>
-                  <Input
-                    value={returnDescription}
-                    onChange={(e) => setReturnDescription(e.target.value)}
-                  />
-                </div>
+              <div className="space-y-1.5">
+                <Label>WhatsApp / telefone</Label>
+                <Input value={recipientContact} onChange={(e) => setRecipientContact(e.target.value)} required />
               </div>
-            </CardContent>
-          </Card>
-        )}
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Condição comercial</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Condição de pagamento</Label>
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={paymentTerms}
-                  onChange={(e) => setPaymentTerms(e.target.value)}
-                >
-                  <option>À vista</option>
-                  <option>7 dias</option>
-                  <option>14 dias</option>
-                  <option>28 dias</option>
-                  <option>Consignação</option>
-                  <option>Cortesia / sem cobrança</option>
-                  <option>Confirmar com Comercial</option>
-                </select>
-              </div>
-              <div className="space-y-2">
-                <Label>Será cobrado do cliente?</Label>
-                <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={billable}
-                  onChange={(e) => setBillable(e.target.value as "yes" | "no" | "review")}
-                >
-                  <option value="yes">Sim</option>
-                  <option value="no">Não</option>
-                  <option value="review">Precisa confirmar</option>
-                </select>
+              <div className="space-y-1.5">
+                <Label>E-mail</Label>
+                <Input type="email" value={recipientEmail} onChange={(e) => setRecipientEmail(e.target.value)} />
               </div>
             </div>
-            {billable !== "yes" && (
-              <div className="space-y-2">
-                <Label>Motivo / centro de custo</Label>
-                <Input
-                  placeholder="Amostra, marketing, equipe, patrocínio..."
-                  value={noChargeReason}
-                  onChange={(e) => setNoChargeReason(e.target.value)}
-                />
+            {isEvent && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>Início · dia</Label>
+                  <Input type="date" value={eventStartDate} onChange={(e) => setEventStartDate(e.target.value)} required={isEvent} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Início · hora</Label>
+                  <TimeSelect value={eventStartTime} onChange={setEventStartTime} required={isEvent} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Fim · dia</Label>
+                  <Input type="date" value={eventEndDate} onChange={(e) => setEventEndDate(e.target.value)} required={isEvent} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Fim · hora</Label>
+                  <TimeSelect value={eventEndTime} onChange={setEventEndTime} required={isEvent} />
+                </div>
               </div>
             )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Observações e arquivos</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Detalhes de Entrega</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label>Entrega</Label>
+                <select
+                  className={selectClass}
+                  value={fulfillment}
+                  onChange={(e) => setFulfillment(e.target.value as FulfillmentMethod)}
+                >
+                  {DELIVERY_METHODS.map((method) => (
+                    <option key={method.value} value={method.value}>
+                      {method.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Dia</Label>
+                <Input type="date" min={tomorrowIso()} value={neededDate} onChange={(e) => setNeededDate(e.target.value)} required />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Hora</Label>
+                <TimeSelect value={neededTime} onChange={setNeededTime} required />
+              </div>
+            </div>
+            {isEvent && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="space-y-1.5">
+                  <Label>Retirada</Label>
+                  <select
+                    className={selectClass}
+                    value={pickupFulfillment}
+                    onChange={(e) => setPickupFulfillment(e.target.value as FulfillmentMethod)}
+                  >
+                    {PICKUP_METHODS.map((method) => (
+                      <option key={method.value} value={method.value}>
+                        {method.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Dia</Label>
+                  <Input type="date" value={pickupDate} onChange={(e) => setPickupDate(e.target.value)} required={isEvent} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Hora</Label>
+                  <TimeSelect value={pickupTime} onChange={setPickupTime} required={isEvent} />
+                </div>
+              </div>
+            )}
+            {needsAddress && <AddressSearch value={address} onChange={setAddress} required />}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">O que vai · SKUs</p>
+              <div className="flex flex-wrap gap-1">
+                <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => addLine("pop")}>
+                  <IceCream className="mr-1 h-3.5 w-3.5" />
+                  SKU
+                </Button>
+                <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => addLine("material")}>
+                  <Package className="mr-1 h-3.5 w-3.5" />
+                  Material
+                </Button>
+              </div>
+            </div>
+
+            {lines.length === 0 && (
+              <p className="py-5 text-center text-sm text-muted-foreground">Inclua os pops e materiais desta solicitação.</p>
+            )}
+
             <div className="space-y-2">
-              <Label>Observações finais</Label>
-              <textarea
-                className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-y"
-                placeholder="Inclua tudo que Operações precisa saber"
+              {lines.map((line) => (
+                <div
+                  key={line.id}
+                  className="grid grid-cols-[1fr_auto_auto] items-end gap-2 rounded-lg border p-2 sm:grid-cols-[72px_1fr_auto_auto_auto]"
+                >
+                  <Badge variant="secondary" className="hidden h-8 justify-center sm:flex">
+                    {line.kind === "pop" ? "SKU" : "Mat."}
+                  </Badge>
+                  <select
+                    className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                    value={line.productId}
+                    onChange={(e) => updateLine(line.id, { productId: e.target.value })}
+                  >
+                    <option value="">Selecionar</option>
+                    {(line.kind === "pop" ? pops : materials).map((product) => (
+                      <option key={product.id} value={product.id}>
+                        {product.code} · {product.flavor || product.name}
+                      </option>
+                    ))}
+                  </select>
+                  {line.kind === "pop" ? (
+                    <select
+                      className="h-9 w-[108px] rounded-md border border-input bg-background px-2 text-sm"
+                      value={line.state}
+                      onChange={(e) => updateLine(line.id, { state: e.target.value as PhysicalState })}
+                    >
+                      <option value="liquid">Líquido</option>
+                      <option value="frozen">Congelado</option>
+                    </select>
+                  ) : (
+                    <span className="hidden w-[108px] sm:block" />
+                  )}
+                  <Input
+                    type="number"
+                    min="1"
+                    className="h-9 w-20"
+                    placeholder="Qtd"
+                    value={line.quantity}
+                    onChange={(e) => updateLine(line.id, { quantity: e.target.value })}
+                    required
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9"
+                    onClick={() => setLines((current) => current.filter((row) => row.id !== line.id))}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">O que vai · kit</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Marque vai para o que sai. Volta fica ligado por padrão; desmarque se o item permanece com o destinatário — entra em Relatórios → Ativos na rua.
+              </p>
+            </div>
+            <KitPicker
+              assets={pickerAssets}
+              uniforms={uniforms}
+              reservations={pickerReservations}
+              checkouts={pickerCheckouts}
+              orders={orders}
+              reserveFrom={reserveFrom}
+              reserveUntil={reserveUntil}
+              selectedAssetIds={selectedAssetIds}
+              returningAssetIds={returningAssetIds}
+              onToggleAsset={(id, next) => {
+                setSelectedAssetIds((current) => (next ? [...current, id] : current.filter((row) => row !== id)));
+                setReturningAssetIds((current) =>
+                  next ? (current.includes(id) ? current : [...current, id]) : current.filter((row) => row !== id)
+                );
+              }}
+              onToggleAssetReturn={(id, next) => {
+                setReturningAssetIds((current) =>
+                  next ? (current.includes(id) ? current : [...current, id]) : current.filter((row) => row !== id)
+                );
+                if (next) {
+                  setSelectedAssetIds((current) => (current.includes(id) ? current : [...current, id]));
+                }
+              }}
+              selectedUniforms={selectedUniforms}
+              returningUniformIds={returningUniformIds}
+              onChangeUniform={(id, next) => {
+                const hasQty = Boolean(next && Object.values(next).some((qty) => (qty || 0) > 0));
+                const alreadyGoing = Boolean(selectedUniforms[id]);
+                setSelectedUniforms((current) => {
+                  const copy = { ...current };
+                  if (!hasQty) delete copy[id];
+                  else copy[id] = next!;
+                  return copy;
+                });
+                setReturningUniformIds((current) => {
+                  if (!hasQty) return current.filter((row) => row !== id);
+                  if (alreadyGoing) return current;
+                  return current.includes(id) ? current : [...current, id];
+                });
+              }}
+              onToggleUniformReturn={(id, next) => {
+                setReturningUniformIds((current) =>
+                  next ? (current.includes(id) ? current : [...current, id]) : current.filter((row) => row !== id)
+                );
+              }}
+            />
+            <div className="space-y-1.5 pt-1">
+              <Label>Observações para Operações</Label>
+              <Textarea
+                className="min-h-[72px]"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
+                placeholder="Embalagem, acesso, o que volta…"
               />
             </div>
           </CardContent>
         </Card>
 
-        <div className="bg-primary/10 text-sm rounded-lg p-4 border border-primary/20">
-          <strong>O pedido entra diretamente na fila de Operações.</strong>
-          <p className="text-muted-foreground mt-1">
-            Equipamentos selecionados ficam reservados no período informado. Itens
-            indisponíveis não podem ser selecionados.
-          </p>
-        </div>
-
         {error && (
-          <p className="text-destructive text-sm" role="alert">
+          <p className="text-sm text-destructive" role="alert">
             {error}
           </p>
         )}
 
-        <div className="flex items-center gap-4">
-          <Button type="button" variant="outline" onClick={() => navigate("/orders")}>
-            Cancelar
+        <div className="flex items-center gap-3">
+          <Button type="button" variant="outline" onClick={() => navigate("/pedidos/lista")}>
+            Voltar
           </Button>
           <Button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Enviando..." : "Enviar pedido"}
+            {isSubmitting ? "Salvando…" : isEditing ? "Salvar pedido" : "Enviar para Separação"}
           </Button>
         </div>
       </form>
@@ -843,108 +891,149 @@ export function OrderRequestPage() {
   );
 }
 
+const STAGE_LABEL: Record<string, string> = {
+  received: "Recebido",
+  a_separar: "A separar",
+  em_separacao: "Em separação",
+  na_rua: "Na rua",
+  retorno: "Retorno",
+  completed: "Concluído",
+  cancelled: "Cancelado",
+};
+
+const TYPE_LABEL: Record<string, string> = {
+  venda: "Venda",
+  evento: "Evento",
+  amostra: "Amostra",
+  solicitacao_interna: "Interna",
+};
+
 export function OrderListPage() {
-  const { orders, orderItems, separationJobs, products, assets } = useAppStore();
+  const { orders, orderItems, separationJobs, cancelPlacedOrder } = useAppStore();
+  const location = useLocation();
+  const toast = (location.state as { toast?: string } | null)?.toast;
+  const [deleting, setDeleting] = useState<(typeof orders)[number] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const visible = orders.filter((order) => order.status !== "cancelled");
 
-  const getOrderItems = (orderId: string) =>
-    orderItems.filter((i) => i.order_id === orderId);
-
-  const getSeparationJob = (orderId: string) =>
-    separationJobs.find((j) => j.order_id === orderId);
+  const handleDelete = async () => {
+    if (!deleting) return;
+    setBusy(true);
+    setError("");
+    try {
+      await cancelPlacedOrder(deleting.id);
+      setDeleting(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível excluir.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <div className="max-w-4xl mx-auto pb-12">
-      <Link
-        to="/orders"
-        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mt-6"
-      >
-        <ArrowRight className="w-4 h-4 rotate-180" />
+    <div className="mx-auto max-w-3xl pb-12">
+      <Link to="/pedidos" className="mt-6 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowRight className="h-4 w-4 rotate-180" />
         Pedidos
       </Link>
-
-      <div className="flex items-center justify-between py-6">
+      <div className="flex items-center justify-between py-5">
         <div>
-          <span className="text-xs font-semibold text-primary tracking-wider uppercase">
-            ACOMPANHAMENTO
-          </span>
-          <h1 className="text-2xl md:text-3xl font-bold mt-2">Pedidos</h1>
-          <p className="text-muted-foreground mt-1">
-            A mesma ordem acompanha solicitação, separação, entrega e retorno.
-          </p>
+          <h1 className="text-2xl font-bold md:text-3xl">Acompanhar</h1>
+          <p className="mt-1 text-sm text-muted-foreground">O mesmo ID segue até o retorno em Separação. Dá para editar ou excluir o que foi colocado.</p>
         </div>
-        <Link to="/orders/new">
-          <Button>
-            <Plus className="w-4 h-4 mr-2" />
-            Novo pedido
-          </Button>
-        </Link>
+        <Button asChild>
+          <Link to="/pedidos/novo">
+            <Plus className="mr-2 h-4 w-4" />
+            Novo
+          </Link>
+        </Button>
       </div>
-
-      <Card>
-        <CardContent className="pt-6">
-          {orders.length > 0 ? (
-            <div className="space-y-2">
-              {orders.map((order) => {
-                const items = getOrderItems(order.id);
-                const job = getSeparationJob(order.id);
-                const checkedCount = items.filter((i) => i.is_checked).length;
-                return (
-                  <Link
-                    key={order.id}
-                    to={`/separation/${order.id}`}
-                    className="flex items-center justify-between p-4 rounded-lg border hover:border-primary/50 transition-colors"
-                  >
-                    <div>
-                      <strong className="text-sm">
-                        {order.order_number} · {order.order_type} · {order.organization}
-                      </strong>
-                      <p className="text-xs text-muted-foreground">
-                        {order.needed_date} · {order.needed_time} · {checkedCount}/{items.length}{" "}
-                        separados
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Entrega: {job?.delivery_driver || "Pendente"} · Retirada:{" "}
-                        {job?.pickup_driver || "Pendente"}
-                      </p>
-                    </div>
-                    <Badge
-                      variant={
-                        order.status === "completed"
-                          ? "default"
-                          : order.status === "na_rua"
-                          ? "secondary"
-                          : "outline"
-                      }
-                    >
-                      {order.status === "received"
-                        ? "Recebido"
-                        : order.status === "a_separar"
-                        ? "A separar"
-                        : order.status === "em_separacao"
-                        ? "Em separação"
-                        : order.status === "na_rua"
-                        ? "Na rua"
-                        : order.status === "retorno"
-                        ? "Retorno"
-                        : order.status === "completed"
-                        ? "Concluído"
-                        : order.status}
-                    </Badge>
+      {toast && (
+        <p className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{toast}</p>
+      )}
+      {visible.length === 0 ? (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            <CheckCircle2 className="mx-auto mb-3 h-10 w-10 opacity-40" />
+            <p>Nenhum pedido ainda.</p>
+            <Button asChild className="mt-4">
+              <Link to="/pedidos/novo">Criar o primeiro</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-2">
+          {visible.map((order) => {
+            const items = orderItems.filter((item) => item.order_id === order.id);
+            const job = separationJobs.find((row) => row.order_id === order.id);
+            const checked = items.filter((item) => item.is_checked).length;
+            return (
+              <div
+                key={order.id}
+                className="flex items-center gap-2 rounded-xl border p-3 hover:border-primary/40"
+              >
+                <Link to={`/separacao/${order.id}`} className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">
+                    {order.order_number} · {TYPE_LABEL[order.order_type] || order.order_type} · {order.organization}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(`${order.needed_date}T00:00:00`).toLocaleDateString("pt-BR")} · {order.needed_time} · {checked}/{items.length} conferidos
+                    {job?.delivery_driver ? ` · ${job.delivery_driver}` : ""}
+                  </p>
+                </Link>
+                <Badge variant={job?.stage === "na_rua" ? "secondary" : "outline"}>
+                  {STAGE_LABEL[job?.stage || order.status] || order.status}
+                </Badge>
+                <Button asChild variant="outline" size="icon" className="h-9 w-9 shrink-0" title="Editar">
+                  <Link to={`/pedidos/${order.id}/editar`} onClick={(e) => e.stopPropagation()}>
+                    <Pencil className="h-4 w-4" />
+                    <span className="sr-only">Editar {order.order_number}</span>
                   </Link>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-center py-12">
-              <CheckCircle2 className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-              <p className="text-muted-foreground">Nenhum pedido aberto.</p>
-              <Link to="/orders/new">
-                <Button className="mt-4">Criar primeiro pedido</Button>
-              </Link>
-            </div>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 shrink-0 text-destructive hover:text-destructive"
+                  title="Excluir"
+                  onClick={() => {
+                    setError("");
+                    setDeleting(order);
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span className="sr-only">Excluir {order.order_number}</span>
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <Dialog open={Boolean(deleting)} onOpenChange={(open) => !open && !busy && setDeleting(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Excluir {deleting?.order_number}?</DialogTitle>
+            <DialogDescription>
+              Sai da lista e da fila. Libera equipamentos e uniformes deste pedido no sistema. O ID fica cancelado no histórico.
+            </DialogDescription>
+          </DialogHeader>
+          {error && (
+            <p className="text-sm text-destructive" role="alert">
+              {error}
+            </p>
           )}
-        </CardContent>
-      </Card>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={busy} onClick={() => setDeleting(null)}>
+              Manter
+            </Button>
+            <Button type="button" variant="destructive" disabled={busy} onClick={() => void handleDelete()}>
+              {busy ? "Excluindo…" : "Excluir"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

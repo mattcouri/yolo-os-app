@@ -28,6 +28,7 @@ import { InventoryPage } from "@/pages/inventory";
 import { SettingsPage } from "@/pages/settings";
 import { AssetDetailPage } from "@/pages/assets/detail";
 import { UsersPage } from "@/pages/gestao/users";
+import { ReportsPage } from "@/pages/gestao/reports";
 import { useAppStore } from "@/stores";
 
 type AuthState = "checking" | "signed-out" | "signed-in" | "demo";
@@ -111,17 +112,19 @@ function OperationsRoute({
   backTo = "/",
   backLabel = "Voltar",
   staff = false,
+  wide = false,
 }: {
   children: React.ReactNode;
   showBack?: boolean;
   backTo?: string;
   backLabel?: string;
   staff?: boolean;
+  wide?: boolean;
 }) {
   return (
     <AuthGate>
       <RoleGate staff={staff}>
-        <OperationsLayout showBack={showBack} backTo={backTo} backLabel={backLabel}>
+        <OperationsLayout showBack={showBack} backTo={backTo} backLabel={backLabel} wide={wide}>
           {children}
         </OperationsLayout>
       </RoleGate>
@@ -273,6 +276,14 @@ export default function App() {
             </OperationsRoute>
           }
         />
+        <Route
+          path="/pedidos/:orderId/editar"
+          element={
+            <OperationsRoute showBack backTo="/pedidos/lista" backLabel="Acompanhar">
+              <OrderRequestPage />
+            </OperationsRoute>
+          }
+        />
 
         {/* Financeiro flow */}
         <Route
@@ -288,7 +299,7 @@ export default function App() {
         <Route
           path="/separacao"
           element={
-            <OperationsRoute showBack backTo="/operacoes" backLabel="Operações">
+            <OperationsRoute showBack backTo="/" backLabel="Portal" wide>
               <SeparationBoardPage />
             </OperationsRoute>
           }
@@ -363,7 +374,7 @@ export default function App() {
           path="/gestao/reports"
           element={
             <ManagementRoute>
-              <div className="text-muted-foreground">Relatórios (em breve)</div>
+              <ReportsPage />
             </ManagementRoute>
           }
         />

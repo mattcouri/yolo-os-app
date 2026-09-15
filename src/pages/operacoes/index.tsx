@@ -5,7 +5,6 @@ import {
   ArrowLeftRight,
   Grid3X3,
   ArrowRight,
-  Package,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useAppStore } from "@/stores";
@@ -52,7 +51,7 @@ function ActionCard({
 }
 
 export function OperacoesPage() {
-  const { receipts, separationJobs } = useAppStore();
+  const { receipts } = useAppStore();
 
   const pendingPrepare = receipts.filter((receipt) => receipt.status !== "closed").length;
 
@@ -103,25 +102,6 @@ export function OperacoesPage() {
           number="04"
         />
       </div>
-
-      <Link
-        to="/separacao"
-        className="mt-8 w-full grid grid-cols-[56px_1fr_auto] gap-4 items-center p-5 text-left bg-primary text-primary-foreground rounded-2xl hover:bg-primary/90 transition-colors active:scale-[0.99]"
-      >
-        <span className="w-14 h-14 rounded-xl bg-white/10 flex items-center justify-center">
-          <Package className="w-7 h-7" />
-        </span>
-        <span className="flex flex-col gap-1">
-          <strong className="text-lg font-bold">Separação de pedidos</strong>
-          <span className="text-sm opacity-80">
-            Painel da TV · entregas, motoristas, retiradas e retornos
-          </span>
-        </span>
-        <span className="flex items-center gap-2 text-sm">
-          <span>{separationJobs.length} abertos</span>
-          <ArrowRight className="w-5 h-5" />
-        </span>
-      </Link>
     </div>
   );
 }

@@ -55,14 +55,14 @@ export function PedidosPage() {
           Solicitações de saída
         </h1>
         <p className="text-lg text-muted-foreground mt-2">
-          Criar e acompanhar pedidos de vendas, amostras e eventos.
+          Criar e acompanhar vendas, eventos, amostras e solicitações internas.
         </p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <SubActionCard
           title="Novo pedido"
-          description="Abrir uma nova solicitação de venda, amostra, evento ou retirada."
+          description="Venda, evento, amostra ou solicitação interna — vai para Separação."
           icon={<FilePlus className="w-7 h-7" />}
           to="/pedidos/novo"
         />

@@ -11,6 +11,7 @@ interface OperationsLayoutProps {
   showBack?: boolean;
   backTo?: string;
   backLabel?: string;
+  wide?: boolean;
 }
 
 export function OperationsLayout({
@@ -18,6 +19,7 @@ export function OperationsLayout({
   showBack = false,
   backTo = "/",
   backLabel = "Voltar",
+  wide = false,
 }: OperationsLayoutProps) {
   const { profile, role } = useAuthProfile();
   const [session, setSession] = useState<Session | null>(null);
@@ -56,7 +58,7 @@ export function OperationsLayout({
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-b">
-        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
+        <div className={`mx-auto px-4 h-16 flex items-center justify-between ${wide ? "max-w-[1400px]" : "max-w-5xl"}`}>
           <div className="flex items-center gap-3">
             {showBack ? (
               <Link
@@ -115,7 +117,7 @@ export function OperationsLayout({
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 pb-8">{children}</main>
+      <main className={`mx-auto px-4 pb-8 ${wide ? "max-w-[1400px]" : "max-w-5xl"}`}>{children}</main>
 
       <footer className="fixed bottom-0 left-0 right-0 bg-muted/50 backdrop-blur border-t py-2 px-4 text-center text-xs text-muted-foreground sm:hidden">
         YOLO OS · Operações

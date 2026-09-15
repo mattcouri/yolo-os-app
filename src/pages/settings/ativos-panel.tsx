@@ -131,10 +131,58 @@ async function uploadAssetFile(file: File) {
     return URL.createObjectURL(file);
   }
   const safeName = file.name.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9._-]/g, "");
-  const path = `${crypto.randomUUID()}-${safeName}`;
+  const path = `assets/${crypto.randomUUID()}-${safeName}`;
   const { error } = await supabase.storage.from("asset-files").upload(path, file);
   if (error) throw new Error(error.message);
   return supabase.storage.from("asset-files").getPublicUrl(path).data.publicUrl;
+}
+
+function PhotoSlot({
+  url,
+  onPick,
+  onClear,
+}: {
+  url: string;
+  onPick: (file: File) => void;
+  onClear: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <div className="flex w-28 shrink-0 flex-col gap-1">
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        className="flex aspect-square w-full items-center justify-center overflow-hidden rounded-md border bg-muted"
+      >
+        {url ? (
+          <img src={url} alt="Foto do ativo" className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex flex-col items-center gap-1 text-muted-foreground">
+            <ImagePlus className="h-5 w-5" />
+            <span className="text-[10px]">Foto</span>
+          </div>
+        )}
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) onPick(file);
+          e.target.value = "";
+        }}
+      />
+      {url ? (
+        <button type="button" className="text-[10px] text-muted-foreground hover:text-destructive" onClick={onClear}>
+          Remover
+        </button>
+      ) : (
+        <span className="text-[10px] text-muted-foreground">Clique para enviar</span>
+      )}
+    </div>
+  );
 }
 
 function printQr(asset: Asset) {
@@ -192,7 +240,6 @@ export function AtivosPanel() {
   const [qrAsset, setQrAsset] = useState<Asset | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const photoInputRef = useRef<HTMLInputElement>(null);
 
   const suggestedCode = suggestedAssetCode(
     form.category,
@@ -446,6 +493,19 @@ export function AtivosPanel() {
           emptyMessage="Nenhum ativo cadastrado."
           columns={[
             {
+              key: "photo_url",
+              header: "",
+              width: "w-12",
+              render: (item) =>
+                item.photo_url ? (
+                  <img src={item.photo_url} alt="" className="h-9 w-9 rounded-md object-cover" />
+                ) : (
+                  <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted">
+                    <ImagePlus className="h-3.5 w-3.5 text-muted-foreground/50" />
+                  </div>
+                ),
+            },
+            {
               key: "name",
               header: "Nome",
               render: (item) => (
@@ -540,11 +600,35 @@ export function AtivosPanel() {
             </DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-2 pr-1">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2 space-y-2">
-                <Label>Nome do item</Label>
-                <Input value={form.name} onChange={(e) => setField("name", e.target.value)} placeholder="Ex: Freezer horizontal 300L" />
+            <div className="flex gap-3">
+              <PhotoSlot
+                url={form.photo_url}
+                onPick={(file) => {
+                  void (async () => {
+                    try {
+                      setField("photo_url", await uploadAssetFile(file));
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Falha no upload");
+                    }
+                  })();
+                }}
+                onClear={() => setField("photo_url", "")}
+              />
+              <div className="min-w-0 flex-1 space-y-3">
+                <div className="space-y-2">
+                  <Label>Nome do item</Label>
+                  <Input
+                    value={form.name}
+                    onChange={(e) => setField("name", e.target.value)}
+                    placeholder="Ex: Freezer horizontal 300L"
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Essa foto aparece no pedido quando a equipe marca o equipamento.
+                </p>
               </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
                 <Label>Categoria</Label>
                 <CreatableSelect
@@ -620,36 +704,6 @@ export function AtivosPanel() {
                     <option key={s.value} value={s.value}>{s.label}</option>
                   ))}
                 </select>
-              </div>
-              <div className="col-span-2 space-y-2">
-                <Label>Foto principal</Label>
-                <div className="flex items-center gap-3">
-                  {form.photo_url ? (
-                    <img src={form.photo_url} alt="" className="h-16 w-16 rounded-md object-cover border" />
-                  ) : (
-                    <div className="flex h-16 w-16 items-center justify-center rounded-md border bg-muted">
-                      <ImagePlus className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                  )}
-                  <input
-                    ref={photoInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      try {
-                        setField("photo_url", await uploadAssetFile(file));
-                      } catch (err) {
-                        setError(err instanceof Error ? err.message : "Falha no upload");
-                      }
-                    }}
-                  />
-                  <Button type="button" variant="outline" size="sm" onClick={() => photoInputRef.current?.click()}>
-                    Enviar foto
-                  </Button>
-                </div>
               </div>
             </div>
 

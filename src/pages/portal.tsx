@@ -2,11 +2,12 @@ import { Link } from "react-router-dom";
 import {
   Grid3X3,
   Package,
-  DollarSign,
+  Columns3,
   BarChart3,
   ArrowRight,
 } from "lucide-react";
 import { useAuthProfile } from "@/lib/auth";
+import { useAppStore } from "@/stores";
 
 interface ModuleCardProps {
   title: string;
@@ -47,7 +48,9 @@ function ModuleCard({
 
 export function PortalPage() {
   const { profile, canAccessManagement, role } = useAuthProfile();
+  const { separationJobs } = useAppStore();
   const greeting = profile?.full_name?.trim() || "Olá";
+  const openJobs = separationJobs.filter((job) => job.stage !== "retorno").length;
 
   return (
     <div className="min-h-[calc(100vh-8rem)] flex flex-col justify-center">
@@ -82,25 +85,23 @@ export function PortalPage() {
           status="Nova solicitação"
           color="bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
         />
+        <ModuleCard
+          title="Separação de Pedidos"
+          description="Painel da operação: a separar, em rota, retiradas e retornos."
+          icon={<Columns3 className="w-8 h-8" />}
+          to="/separacao"
+          status={openJobs === 1 ? "1 aberto" : `${openJobs} abertos`}
+          color="bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+        />
         {canAccessManagement && (
-          <>
-            <ModuleCard
-              title="Financeiro"
-              description="Faturamento, recebimentos e pendências de cobrança."
-              icon={<DollarSign className="w-8 h-8" />}
-              to="/financeiro"
-              status="Em breve"
-              color="bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400"
-            />
-            <ModuleCard
-              title="Gestão"
-              description="Estoque, documentos, cadastros, relatórios e aprovações."
-              icon={<BarChart3 className="w-8 h-8" />}
-              to="/gestao"
-              status="Dashboard"
-              color="bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
-            />
-          </>
+          <ModuleCard
+            title="Gestão"
+            description="Estoque, documentos, cadastros, relatórios e aprovações."
+            icon={<BarChart3 className="w-8 h-8" />}
+            to="/gestao"
+            status="Dashboard"
+            color="bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
+          />
         )}
       </div>
 

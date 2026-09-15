@@ -12,6 +12,7 @@ import {
 } from '@/lib/receipt-progress';
 import { locationRequiresBox } from '@/lib/stock-placement';
 import { canSendToFactory } from '@/lib/packaging-board';
+import { UNIFORM_STAY_OUT_NOTE, checkoutStaysOut } from '@/lib/kit-availability';
 import {
   ASSEMBLED_SYSTEM_KEY,
   assembledLocation,
@@ -28,7 +29,7 @@ import type {
   Order, OrderItem, SeparationJob, EquipmentReservation,
   OrderType, FulfillmentMethod, SeparationStage, StockGrade,
   PhysicalState, StockStatus, AssetComponent, AssetAttachment,
-  Uniform, UniformCheckout, UniformSize
+  Uniform, UniformCheckout, UniformSize, Vehicle
 } from '@/types/database';
 
 interface AppState {
@@ -54,6 +55,7 @@ interface AppState {
   equipmentReservations: EquipmentReservation[];
   uniforms: Uniform[];
   uniformCheckouts: UniformCheckout[];
+  vehicles: Vehicle[];
   
   fetchAll: () => Promise<void>;
   fetchLocations: () => Promise<void>;
@@ -81,11 +83,14 @@ interface AppState {
   createPrepareBatch: (data: CreatePrepareBatchData) => Promise<Inspection>;
   createMovement: (data: CreateMovementData) => Promise<Movement>;
   createOrder: (data: CreateOrderData) => Promise<Order>;
+  updatePlacedOrder: (orderId: string, data: CreateOrderData) => Promise<Order>;
+  cancelPlacedOrder: (orderId: string) => Promise<void>;
   createInventoryCount: (locationId: string) => Promise<InventoryCount>;
   
   updateStock: (id: string, data: Partial<Stock>) => Promise<void>;
   updateMaterialStock: (id: string, data: Partial<MaterialStock>) => Promise<void>;
   updateOrder: (id: string, data: Partial<Order>) => Promise<void>;
+  updateOrderItem: (id: string, data: Partial<OrderItem>) => Promise<void>;
   updateSeparationJob: (id: string, data: Partial<SeparationJob>) => Promise<void>;
   updateInventoryCount: (id: string, data: Partial<InventoryCount>) => Promise<void>;
   updateAsset: (id: string, data: Partial<Asset>) => Promise<void>;
@@ -105,11 +110,19 @@ interface AppState {
   deleteAssetAttachment: (id: string) => Promise<void>;
   fetchEquipmentReservations: () => Promise<void>;
   fetchUniforms: () => Promise<void>;
+  fetchVehicles: () => Promise<void>;
+  createVehicle: (name: string) => Promise<Vehicle>;
+  updateVehicle: (id: string, name: string) => Promise<void>;
+  deleteVehicle: (id: string) => Promise<void>;
   createUniform: (data: Omit<Uniform, 'id' | 'created_at' | 'updated_at'>) => Promise<Uniform>;
   updateUniform: (id: string, data: Partial<Uniform>) => Promise<void>;
   deleteUniform: (id: string) => Promise<void>;
   checkoutUniforms: (orderId: string, lines: { uniform_id: string; size: UniformSize; quantity: number }[]) => Promise<void>;
-  returnUniformsForOrder: (orderId: string) => Promise<void>;
+  returnUniformsForOrder: (
+    orderId: string,
+    stayOut?: { id: string; remaining: number }[]
+  ) => Promise<void>;
+  completeEquipmentForOrder: (orderId: string, stayOutAssetIds?: string[]) => Promise<void>;
   
   transferBoxes: (boxIds: string[], destinationId: string) => Promise<void>;
   sendBoxesToFactory: (assetIds: string[]) => Promise<void>;
@@ -187,6 +200,7 @@ interface CreateMovementData {
 }
 
 interface CreateOrderData {
+  requester_id?: string;
   requester_name: string;
   organization: string;
   recipient_name: string;
@@ -197,6 +211,7 @@ interface CreateOrderData {
   needed_date: string;
   needed_time: string;
   fulfillment: FulfillmentMethod;
+  pickup_fulfillment?: FulfillmentMethod;
   address?: string;
   event_name?: string;
   event_start?: string;
@@ -224,10 +239,29 @@ interface CreateOrderData {
     is_returnable: boolean;
   }[];
   equipment_ids?: string[];
-  uniforms?: { uniform_id: string; size: UniformSize; quantity: number }[];
+  uniforms?: { uniform_id: string; size: UniformSize; quantity: number; returns?: boolean }[];
+  returning_equipment_ids?: string[];
 }
 
 const generateId = () => crypto.randomUUID();
+const VEHICLES_KEY = 'yolo-os-vehicles';
+
+function readLocalVehicles(): Vehicle[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(VEHICLES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Vehicle[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalVehicles(rows: Vehicle[]) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(VEHICLES_KEY, JSON.stringify(rows));
+}
 const usedCodes = new Set<string>();
 
 function rememberCodes(values: (string | null | undefined)[]) {
@@ -374,6 +408,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   equipmentReservations: [],
   uniforms: [],
   uniformCheckouts: [],
+  vehicles: [],
   
   clearError: () => set({ error: null }),
   
@@ -393,6 +428,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       state.fetchMovements(),
       state.fetchEquipmentReservations(),
       state.fetchUniforms(),
+      state.fetchVehicles(),
     ]);
     const next = get();
     rememberCodes(next.receipts.map((row) => row.receipt_number));
@@ -2120,7 +2156,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const order: Order = {
       id: generateId(),
       order_number: generateOrderNumber(),
-      requester_id: null,
+      requester_id: data.requester_id || null,
       requester_name: data.requester_name,
       organization: data.organization,
       recipient_name: data.recipient_name,
@@ -2131,6 +2167,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       needed_date: data.needed_date,
       needed_time: data.needed_time,
       fulfillment: data.fulfillment,
+      pickup_fulfillment: data.pickup_fulfillment || null,
       address: data.address || null,
       event_name: data.event_name || null,
       event_start: data.event_start || null,
@@ -2147,7 +2184,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return_description: data.return_description || null,
       item_notes: data.item_notes || null,
       notes: data.notes || null,
-      status: 'received',
+      status: 'a_separar',
       created_at: now,
       updated_at: now,
     };
@@ -2181,9 +2218,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       updated_at: now,
     };
     
+    const vaiEquipment = data.equipment_ids || [];
+    const voltaEquipment = new Set(data.returning_equipment_ids ?? vaiEquipment);
+    const stayOutEquipment = vaiEquipment.filter((assetId) => !voltaEquipment.has(assetId));
+
     const reservations: EquipmentReservation[] = [];
-    if (data.equipment_ids && data.reserve_from && data.reserve_until) {
-      for (const assetId of data.equipment_ids) {
+    if (data.reserve_from && data.reserve_until) {
+      for (const assetId of vaiEquipment) {
+        if (!voltaEquipment.has(assetId)) continue;
         reservations.push({
           id: generateId(),
           asset_id: assetId,
@@ -2208,27 +2250,258 @@ export const useAppStore = create<AppState>((set, get) => ({
         status: 'out' as const,
         checked_out_at: now,
         returned_at: null,
-        notes: null,
+        notes: line.returns === false ? UNIFORM_STAY_OUT_NOTE : null,
         created_at: now,
       }));
-    
+
     if (isSupabaseConfigured && supabase) {
-      await supabase.from('orders').insert(order);
+      const { error: orderError } = await supabase.from('orders').insert(order);
+      if (orderError) {
+        const missingPickupCol = /pickup_fulfillment/i.test(orderError.message);
+        if (!missingPickupCol) throw new Error(orderError.message);
+        const { pickup_fulfillment: _ignored, ...withoutPickupMethod } = order;
+        const retry = await supabase.from('orders').insert(withoutPickupMethod);
+        if (retry.error) throw new Error(retry.error.message);
+      }
       await supabase.from('order_items').insert(orderItems);
       await supabase.from('separation_jobs').insert(separationJob);
       if (reservations.length) await supabase.from('equipment_reservations').insert(reservations);
       if (uniformCheckouts.length) await supabase.from('uniform_checkouts').insert(uniformCheckouts);
+      for (const assetId of stayOutEquipment) {
+        const { error } = await supabase
+          .from('assets')
+          .update({ status: 'in_use', last_moved_at: now, updated_at: now })
+          .eq('id', assetId);
+        if (error) throw new Error(error.message);
+      }
     }
-    
-    set(s => ({
+
+    set((s) => ({
       orders: [order, ...s.orders],
       orderItems: [...s.orderItems, ...orderItems],
       separationJobs: [...s.separationJobs, ...[separationJob]],
       equipmentReservations: [...s.equipmentReservations, ...reservations],
       uniformCheckouts: [...s.uniformCheckouts, ...uniformCheckouts],
+      assets: s.assets.map((asset) =>
+        stayOutEquipment.includes(asset.id)
+          ? { ...asset, status: 'in_use', last_moved_at: now, updated_at: now }
+          : asset
+      ),
     }));
     
     return order;
+  },
+
+  updatePlacedOrder: async (orderId, data) => {
+    const state = get();
+    const existing = state.orders.find((row) => row.id === orderId);
+    if (!existing) throw new Error('Pedido não encontrado.');
+    const now = new Date().toISOString();
+    const previousItems = state.orderItems.filter((item) => item.order_id === orderId);
+    const previousStayOut = previousItems
+      .filter((item) => item.asset_id && !item.is_returnable)
+      .map((item) => item.asset_id!);
+
+    const patch: Partial<Order> = {
+      requester_id: data.requester_id || null,
+      requester_name: data.requester_name,
+      organization: data.organization,
+      recipient_name: data.recipient_name,
+      recipient_contact: data.recipient_contact,
+      recipient_email: data.recipient_email || null,
+      customer_reference: data.customer_reference || null,
+      order_type: data.order_type,
+      needed_date: data.needed_date,
+      needed_time: data.needed_time,
+      fulfillment: data.fulfillment,
+      pickup_fulfillment: data.pickup_fulfillment || null,
+      address: data.address || null,
+      event_name: data.event_name || null,
+      event_start: data.event_start || null,
+      event_end: data.event_end || null,
+      pickup_at: data.pickup_at || null,
+      onsite_contact: data.onsite_contact || null,
+      audience: data.audience || null,
+      reserve_from: data.reserve_from || null,
+      reserve_until: data.reserve_until || null,
+      payment_terms: data.payment_terms || null,
+      billable: data.billable || null,
+      no_charge_reason: data.no_charge_reason || null,
+      reference: data.reference || null,
+      item_notes: data.item_notes || null,
+      notes: data.notes || null,
+      updated_at: now,
+    };
+
+    const nextItems: OrderItem[] = data.items.map((item) => ({
+      id: generateId(),
+      order_id: orderId,
+      product_id: item.product_id || null,
+      asset_id: item.asset_id || null,
+      name: item.name,
+      code: item.code,
+      quantity: item.quantity,
+      unit: item.unit,
+      requested_state: item.requested_state || null,
+      is_returnable: item.is_returnable,
+      is_checked: false,
+      created_at: now,
+    }));
+
+    const vaiEquipment = data.equipment_ids || [];
+    const voltaEquipment = new Set(data.returning_equipment_ids ?? vaiEquipment);
+    const stayOutEquipment = vaiEquipment.filter((assetId) => !voltaEquipment.has(assetId));
+    const releasedAssets = previousStayOut.filter((id) => !stayOutEquipment.includes(id));
+
+    const reservations: EquipmentReservation[] = [];
+    if (data.reserve_from && data.reserve_until) {
+      for (const assetId of vaiEquipment) {
+        if (!voltaEquipment.has(assetId)) continue;
+        reservations.push({
+          id: generateId(),
+          asset_id: assetId,
+          order_id: orderId,
+          reserved_from: data.reserve_from,
+          reserved_until: data.reserve_until,
+          holder_name: existing.order_number,
+          status: 'active',
+          created_at: now,
+        });
+      }
+    }
+
+    const uniformCheckouts: UniformCheckout[] = (data.uniforms || [])
+      .filter((line) => line.quantity > 0)
+      .map((line) => ({
+        id: generateId(),
+        uniform_id: line.uniform_id,
+        order_id: orderId,
+        size: line.size,
+        quantity: line.quantity,
+        status: 'out' as const,
+        checked_out_at: now,
+        returned_at: null,
+        notes: line.returns === false ? UNIFORM_STAY_OUT_NOTE : null,
+        created_at: now,
+      }));
+
+    if (isSupabaseConfigured && supabase) {
+      const { error: orderError } = await supabase.from('orders').update(patch).eq('id', orderId);
+      if (orderError) {
+        const missingPickupCol = /pickup_fulfillment/i.test(orderError.message);
+        if (!missingPickupCol) throw new Error(orderError.message);
+        const { pickup_fulfillment: _ignored, ...withoutPickupMethod } = patch;
+        const retry = await supabase.from('orders').update(withoutPickupMethod).eq('id', orderId);
+        if (retry.error) throw new Error(retry.error.message);
+      }
+      await supabase.from('order_items').delete().eq('order_id', orderId);
+      if (nextItems.length) await supabase.from('order_items').insert(nextItems);
+      await supabase.from('equipment_reservations').delete().eq('order_id', orderId);
+      if (reservations.length) await supabase.from('equipment_reservations').insert(reservations);
+      await supabase.from('uniform_checkouts').delete().eq('order_id', orderId);
+      if (uniformCheckouts.length) await supabase.from('uniform_checkouts').insert(uniformCheckouts);
+      for (const assetId of stayOutEquipment) {
+        const { error } = await supabase
+          .from('assets')
+          .update({ status: 'in_use', last_moved_at: now, updated_at: now })
+          .eq('id', assetId);
+        if (error) throw new Error(error.message);
+      }
+      for (const assetId of releasedAssets) {
+        const asset = get().assets.find((row) => row.id === assetId);
+        if (!asset || asset.status !== 'in_use') continue;
+        const { error } = await supabase
+          .from('assets')
+          .update({ status: 'available', last_moved_at: now, updated_at: now })
+          .eq('id', assetId);
+        if (error) throw new Error(error.message);
+      }
+    }
+
+    const nextOrder: Order = { ...existing, ...patch };
+    set((s) => ({
+      orders: s.orders.map((row) => (row.id === orderId ? nextOrder : row)),
+      orderItems: [...s.orderItems.filter((item) => item.order_id !== orderId), ...nextItems],
+      equipmentReservations: [
+        ...s.equipmentReservations.filter((row) => row.order_id !== orderId),
+        ...reservations,
+      ],
+      uniformCheckouts: [
+        ...s.uniformCheckouts.filter((row) => row.order_id !== orderId),
+        ...uniformCheckouts,
+      ],
+      assets: s.assets.map((asset) => {
+        if (stayOutEquipment.includes(asset.id)) {
+          return { ...asset, status: 'in_use', last_moved_at: now, updated_at: now };
+        }
+        if (releasedAssets.includes(asset.id) && asset.status === 'in_use') {
+          return { ...asset, status: 'available', last_moved_at: now, updated_at: now };
+        }
+        return asset;
+      }),
+    }));
+    return nextOrder;
+  },
+
+  cancelPlacedOrder: async (orderId) => {
+    const state = get();
+    const existing = state.orders.find((row) => row.id === orderId);
+    if (!existing) throw new Error('Pedido não encontrado.');
+    const now = new Date().toISOString();
+    const heldAssets = state.orderItems
+      .filter((item) => item.order_id === orderId && item.asset_id)
+      .map((item) => item.asset_id!)
+      .filter((id, index, all) => all.indexOf(id) === index)
+      .filter((id) => state.assets.find((asset) => asset.id === id)?.status === 'in_use');
+
+    if (isSupabaseConfigured && supabase) {
+      const { error: orderError } = await supabase
+        .from('orders')
+        .update({ status: 'cancelled', updated_at: now })
+        .eq('id', orderId);
+      if (orderError) throw new Error(orderError.message);
+      await supabase
+        .from('equipment_reservations')
+        .update({ status: 'cancelled' })
+        .eq('order_id', orderId)
+        .eq('status', 'active');
+      await supabase
+        .from('uniform_checkouts')
+        .update({ status: 'returned', returned_at: now })
+        .eq('order_id', orderId)
+        .eq('status', 'out');
+      const job = state.separationJobs.find((row) => row.order_id === orderId);
+      if (job) {
+        await supabase.from('separation_jobs').update({ stage: 'retorno', updated_at: now }).eq('id', job.id);
+      }
+      for (const assetId of heldAssets) {
+        const { error } = await supabase
+          .from('assets')
+          .update({ status: 'available', last_moved_at: now, updated_at: now })
+          .eq('id', assetId);
+        if (error) throw new Error(error.message);
+      }
+    }
+
+    set((s) => ({
+      orders: s.orders.map((row) => (row.id === orderId ? { ...row, status: 'cancelled', updated_at: now } : row)),
+      equipmentReservations: s.equipmentReservations.map((row) =>
+        row.order_id === orderId && row.status === 'active' ? { ...row, status: 'cancelled' } : row
+      ),
+      uniformCheckouts: s.uniformCheckouts.map((row) =>
+        row.order_id === orderId && row.status === 'out'
+          ? { ...row, status: 'returned', returned_at: now }
+          : row
+      ),
+      separationJobs: s.separationJobs.map((job) =>
+        job.order_id === orderId ? { ...job, stage: 'retorno', updated_at: now } : job
+      ),
+      assets: s.assets.map((asset) =>
+        heldAssets.includes(asset.id)
+          ? { ...asset, status: 'available', last_moved_at: now, updated_at: now }
+          : asset
+      ),
+    }));
   },
   
   createInventoryCount: async (locationId) => {
@@ -2301,6 +2574,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       separationJobs: s.separationJobs.map(j => j.id === id ? { ...j, ...data, updated_at: now } : j)
     }));
   },
+
+  updateOrderItem: async (id, data) => {
+    if (isSupabaseConfigured && supabase) {
+      const { error } = await supabase.from('order_items').update(data).eq('id', id);
+      if (error) throw new Error(error.message);
+    }
+    set((s) => ({
+      orderItems: s.orderItems.map((item) => (item.id === id ? { ...item, ...data } : item)),
+    }));
+  },
   
   updateInventoryCount: async (id, data) => {
     if (isSupabaseConfigured && supabase) {
@@ -2341,6 +2624,64 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     set({ uniforms: uniforms || [], uniformCheckouts: checkouts || [] });
+  },
+
+  fetchVehicles: async () => {
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.from('vehicles').select('*').order('name');
+      if (!error) {
+        const rows = data || [];
+        writeLocalVehicles(rows);
+        set({ vehicles: rows });
+        return;
+      }
+    }
+    set({ vehicles: readLocalVehicles() });
+  },
+
+  createVehicle: async (name) => {
+    const label = name.trim();
+    if (!label) throw new Error('Informe o nome do veículo.');
+    const existing = get().vehicles.find((row) => row.name.toLowerCase() === label.toLowerCase());
+    if (existing) return existing;
+    const now = new Date().toISOString();
+    const row: Vehicle = { id: generateId(), name: label, created_at: now, updated_at: now };
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.from('vehicles').insert(row).select().single();
+      if (!error && data) {
+        const next = [...get().vehicles, data].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+        writeLocalVehicles(next);
+        set({ vehicles: next });
+        return data;
+      }
+    }
+    const next = [...get().vehicles, row].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    writeLocalVehicles(next);
+    set({ vehicles: next });
+    return row;
+  },
+
+  updateVehicle: async (id, name) => {
+    const label = name.trim();
+    if (!label) throw new Error('Informe o nome do veículo.');
+    const now = new Date().toISOString();
+    if (isSupabaseConfigured && supabase) {
+      await supabase.from('vehicles').update({ name: label, updated_at: now }).eq('id', id);
+    }
+    const next = get()
+      .vehicles.map((row) => (row.id === id ? { ...row, name: label, updated_at: now } : row))
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    writeLocalVehicles(next);
+    set({ vehicles: next });
+  },
+
+  deleteVehicle: async (id) => {
+    if (isSupabaseConfigured && supabase) {
+      await supabase.from('vehicles').delete().eq('id', id);
+    }
+    const next = get().vehicles.filter((row) => row.id !== id);
+    writeLocalVehicles(next);
+    set({ vehicles: next });
   },
 
   createUniform: async (data) => {
@@ -2407,24 +2748,98 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ uniformCheckouts: [...s.uniformCheckouts, ...rows] }));
   },
 
-  returnUniformsForOrder: async (orderId) => {
+  returnUniformsForOrder: async (orderId, stayOut = []) => {
     const now = new Date().toISOString();
-    const open = get().uniformCheckouts.filter((c) => c.order_id === orderId && c.status === 'out');
-    if (!open.length) return;
+    const stayOutIds = new Set(stayOut.map((row) => row.id));
+    const remainingById = new Map(stayOut.map((row) => [row.id, row.remaining]));
+    const returning = get().uniformCheckouts.filter(
+      (c) => c.order_id === orderId && c.status === 'out' && !checkoutStaysOut(c) && !stayOutIds.has(c.id)
+    );
+    const keep = get().uniformCheckouts.filter((c) => stayOutIds.has(c.id) && c.status === 'out');
+
     if (isSupabaseConfigured && supabase) {
+      if (returning.length) {
+        const { error } = await supabase
+          .from('uniform_checkouts')
+          .update({ status: 'returned', returned_at: now })
+          .in('id', returning.map((c) => c.id));
+        if (error) throw new Error(error.message);
+      }
+      for (const checkout of keep) {
+        const remaining = remainingById.get(checkout.id) ?? checkout.quantity;
+        const { error } = await supabase
+          .from('uniform_checkouts')
+          .update({
+            notes: UNIFORM_STAY_OUT_NOTE,
+            quantity: Math.max(1, remaining),
+          })
+          .eq('id', checkout.id);
+        if (error) throw new Error(error.message);
+      }
+    }
+
+    const returningIds = new Set(returning.map((c) => c.id));
+    set((s) => ({
+      uniformCheckouts: s.uniformCheckouts.map((c) => {
+        if (returningIds.has(c.id)) return { ...c, status: 'returned', returned_at: now };
+        if (stayOutIds.has(c.id) && c.status === 'out') {
+          return {
+            ...c,
+            notes: UNIFORM_STAY_OUT_NOTE,
+            quantity: Math.max(1, remainingById.get(c.id) ?? c.quantity),
+          };
+        }
+        return c;
+      }),
+    }));
+  },
+
+  completeEquipmentForOrder: async (orderId, stayOutAssetIds = []) => {
+    const now = new Date().toISOString();
+    const stayOut = new Set(stayOutAssetIds);
+    const open = get().equipmentReservations.filter((row) => row.order_id === orderId && row.status === 'active');
+    const fromItems = get()
+      .orderItems.filter((item) => item.order_id === orderId && item.asset_id)
+      .map((item) => item.asset_id!)
+      .filter((id) => stayOut.has(id));
+    const assetIds = [...new Set([...open.map((row) => row.asset_id), ...fromItems])];
+    if (!open.length && !fromItems.length) return;
+
+    if (isSupabaseConfigured && supabase && open.length) {
       const { error } = await supabase
-        .from('uniform_checkouts')
-        .update({ status: 'returned', returned_at: now })
+        .from('equipment_reservations')
+        .update({ status: 'completed' })
         .eq('order_id', orderId)
-        .eq('status', 'out');
+        .eq('status', 'active');
       if (error) throw new Error(error.message);
     }
+
+    for (const assetId of assetIds) {
+      const asset = get().assets.find((row) => row.id === assetId);
+      if (!asset) continue;
+      if (asset.status === 'damaged' || asset.status === 'lost') continue;
+      const nextStatus = stayOut.has(assetId) ? 'in_use' : 'returned_pending';
+      if (isSupabaseConfigured && supabase) {
+        await supabase
+          .from('assets')
+          .update({ status: nextStatus, last_moved_at: now, updated_at: now })
+          .eq('id', assetId);
+      }
+    }
+
     set((s) => ({
-      uniformCheckouts: s.uniformCheckouts.map((c) =>
-        c.order_id === orderId && c.status === 'out'
-          ? { ...c, status: 'returned', returned_at: now }
-          : c
+      equipmentReservations: s.equipmentReservations.map((row) =>
+        row.order_id === orderId && row.status === 'active' ? { ...row, status: 'completed' } : row
       ),
+      assets: s.assets.map((asset) => {
+        if (!assetIds.includes(asset.id) || asset.status === 'damaged' || asset.status === 'lost') return asset;
+        return {
+          ...asset,
+          status: stayOut.has(asset.id) ? 'in_use' : 'returned_pending',
+          last_moved_at: now,
+          updated_at: now,
+        };
+      }),
     }));
   },
 

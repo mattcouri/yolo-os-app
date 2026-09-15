@@ -18,12 +18,13 @@ interface CreatableSelectProps {
   value: string;
   onChange: (value: string) => void;
   options: SelectOption[];
-  onCreateOption?: (label: string) => void;
+  onCreateOption?: (label: string) => void | string | Promise<void | string>;
   onEditOption?: (value: string, newLabel: string) => void;
   onDeleteOption?: (value: string) => void;
   placeholder?: string;
   createPlaceholder?: string;
   className?: string;
+  disabled?: boolean;
 }
 
 export function CreatableSelect({
@@ -36,6 +37,7 @@ export function CreatableSelect({
   placeholder = "Selecione...",
   createPlaceholder = "Novo tipo...",
   className,
+  disabled = false,
 }: CreatableSelectProps) {
   const [open, setOpen] = React.useState(false);
   const [isCreating, setIsCreating] = React.useState(false);
@@ -47,11 +49,15 @@ export function CreatableSelect({
 
   const selectedOption = options.find((opt) => opt.value === value);
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (newValue.trim() && onCreateOption) {
-      onCreateOption(newValue.trim());
-      const newId = newValue.trim().toLowerCase().replace(/\s+/g, "_");
-      onChange(newId);
+      const label = newValue.trim();
+      const created = await onCreateOption(label);
+      const nextValue =
+        typeof created === "string" && created.trim()
+          ? created.trim()
+          : label.toLowerCase().replace(/\s+/g, "_");
+      onChange(nextValue);
       setNewValue("");
       setIsCreating(false);
       setOpen(false);
@@ -120,19 +126,20 @@ export function CreatableSelect({
   const canCreate = !!onCreateOption;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
           role="combobox"
           aria-expanded={open}
+          disabled={disabled}
           className={cn(
             "h-9 w-full justify-between font-normal",
             !value && "text-muted-foreground",
             className
           )}
         >
-          {selectedOption?.label || placeholder}
+          {selectedOption?.label || value || placeholder}
           <svg
             className="ml-2 h-4 w-4 shrink-0 opacity-50"
             fill="none"
