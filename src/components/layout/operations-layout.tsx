@@ -57,7 +57,7 @@ export function OperationsLayout({
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-b">
+      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur print:hidden supports-[backdrop-filter]:bg-background/60">
         <div className={`mx-auto px-4 h-16 flex items-center justify-between ${wide ? "max-w-[1400px]" : "max-w-5xl"}`}>
           <div className="flex items-center gap-3">
             {showBack ? (

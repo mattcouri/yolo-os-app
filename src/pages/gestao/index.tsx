@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { StageTag, stageTagFromStatus } from "@/components/separacao/stage-tag";
 import {
   Package,
   TrendingUp,
@@ -166,7 +167,7 @@ export function GestaoDashboardPage() {
                     <span className="font-medium text-sm">
                       {orders.find((order) => order.id === job.order_id)?.order_number || "—"}
                     </span>
-                    <Badge variant="outline">{job.stage}</Badge>
+                    <StageTag {...stageTagFromStatus(job.stage)} />
                   </div>
                 ))}
               </div>

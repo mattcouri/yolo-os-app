@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
-import { getBoxUnitCapacity } from '@/lib/operational-assets';
+import {
+  ASSET_CLEAN_SYSTEM_KEY,
+  ASSET_DIRTY_SYSTEM_KEY,
+  getBoxUnitCapacity,
+  suggestedAssetCode,
+} from '@/lib/operational-assets';
 import {
   declaredQuantity,
   liveCountedForItem,
@@ -13,6 +18,12 @@ import {
 import { locationRequiresBox } from '@/lib/stock-placement';
 import { canSendToFactory } from '@/lib/packaging-board';
 import { UNIFORM_STAY_OUT_NOTE, checkoutStaysOut } from '@/lib/kit-availability';
+import { checkoutMatchesItem } from '@/lib/ativos-na-rua';
+import {
+  closeOutLinesFromUnits,
+  returnUnitAssetStatus,
+  type ReturnUnit,
+} from '@/lib/separacao';
 import {
   ASSEMBLED_SYSTEM_KEY,
   assembledLocation,
@@ -65,6 +76,8 @@ interface AppState {
   getProductComponents: (productId: string) => Promise<{ product_id: string; quantity: number }[]>;
   getAllProductComponents: () => Promise<{ parent_product_id: string; child_product_id: string; quantity: number }[]>;
   ensureAssembledLocation: () => Promise<Location>;
+  ensureAssetYardLocations: () => Promise<void>;
+  ensureSeparationJobs: () => Promise<void>;
   fetchAssets: () => Promise<void>;
   fetchReceipts: () => Promise<void>;
   fetchStock: () => Promise<void>;
@@ -72,6 +85,7 @@ interface AppState {
   fetchInspections: () => Promise<void>;
   fetchOrders: () => Promise<void>;
   fetchSeparationJobs: () => Promise<void>;
+  refreshSeparationLive: () => Promise<void>;
   fetchInventoryCounts: () => Promise<void>;
   fetchMovements: () => Promise<void>;
   
@@ -123,6 +137,8 @@ interface AppState {
     stayOut?: { id: string; remaining: number }[]
   ) => Promise<void>;
   completeEquipmentForOrder: (orderId: string, stayOutAssetIds?: string[]) => Promise<void>;
+  closeSeparationOrder: (orderId: string, units: ReturnUnit[], notes?: string) => Promise<void>;
+  dispatchOrderItem: (orderId: string, itemId: string) => Promise<void>;
   
   transferBoxes: (boxIds: string[], destinationId: string) => Promise<void>;
   sendBoxesToFactory: (assetIds: string[]) => Promise<void>;
@@ -262,6 +278,42 @@ function writeLocalVehicles(rows: Vehicle[]) {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(VEHICLES_KEY, JSON.stringify(rows));
 }
+
+function jobStageFromOrder(status: Order['status']): SeparationStage {
+  if (status === 'em_separacao' || status === 'na_rua' || status === 'retorno') return status;
+  return 'a_separar';
+}
+
+function blankSeparationJob(orderId: string, stage: SeparationStage = 'a_separar'): SeparationJob {
+  const now = new Date().toISOString();
+  return {
+    id: generateId(),
+    order_id: orderId,
+    delivery_driver: null,
+    pickup_driver: null,
+    vehicle: null,
+    pickup_vehicle: null,
+    departure_at: null,
+    return_at: null,
+    stage,
+    operations_notes: null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+async function persistSeparationJob(job: SeparationJob) {
+  if (!isSupabaseConfigured || !supabase) return;
+  const { error } = await supabase.from('separation_jobs').insert(job);
+  if (!error) return;
+  if (/pickup_vehicle/i.test(error.message)) {
+    const { pickup_vehicle: _ignored, ...rest } = job;
+    const retry = await supabase.from('separation_jobs').insert(rest);
+    if (retry.error) throw new Error(retry.error.message);
+    return;
+  }
+  throw new Error(error.message);
+}
 const usedCodes = new Set<string>();
 
 function rememberCodes(values: (string | null | undefined)[]) {
@@ -282,7 +334,7 @@ const generateStockNumber = (prefix = 'CX') => allocateCode(prefix, 3);
 const generateReceiptNumber = () => allocateCode('REC', 3);
 const generateInspectionNumber = () => allocateCode('INS', 3);
 const generateFillNumber = () => allocateCode('ENV', 4);
-const generateMovementNumber = () => allocateCode('MOV', 3);
+const generateMovementNumber = () => allocateCode('MOV', 4);
 const generateOrderNumber = () => allocateCode('PED', 4);
 const generateCountNumber = () => allocateCode('INV', 3);
 
@@ -346,6 +398,8 @@ const defaultLocations: Location[] = [
   { id: '5', name: 'Freezer cozinha', type: 'freezer', is_active: true, sort_order: 4, requires_box: false, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
   { id: '6', name: 'Expedição', type: 'shipping', is_active: true, sort_order: 5, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
   { id: '7', name: 'Produtos montados', type: 'storage', is_active: true, sort_order: 90, requires_box: false, system_key: ASSEMBLED_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '8', name: 'Área suja', type: 'other', is_active: true, sort_order: 100, requires_box: false, system_key: ASSET_DIRTY_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '9', name: 'Área limpa', type: 'other', is_active: true, sort_order: 101, requires_box: false, system_key: ASSET_CLEAN_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
 ];
 
 const defaultProducts: Product[] = [
@@ -358,8 +412,8 @@ const defaultProducts: Product[] = [
 ];
 
 const defaultAssets: Asset[] = [
-  { id: '1', code: 'FREEZER-001', name: 'Freezer 1', type: 'freezer', location_id: null, status: 'available', is_active: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '2', code: 'CARRINHO-001', name: 'Carrinho de sorvete 1', type: 'carrinho', location_id: null, status: 'available', is_active: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '1', code: 'FREEZER-001', name: 'Freezer 1', type: 'freezer', location_id: '9', status: 'available', is_active: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '2', code: 'CARRINHO-001', name: 'Carrinho de sorvete 1', type: 'carrinho', location_id: '9', status: 'available', is_active: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
   ...Array.from({ length: 10 }, (_, i) => ({
     id: String(i + 3),
     code: `MEDIA-${String(i + 1).padStart(3, '0')}`,
@@ -440,6 +494,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     rememberCodes(next.orders.map((row) => row.order_number));
     rememberCodes(next.inventoryCounts.map((row) => row.count_number));
     await get().ensureAssembledLocation();
+    await get().ensureAssetYardLocations();
+    await get().ensureSeparationJobs();
   },
   
   fetchLocations: async () => {
@@ -709,6 +765,64 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
+  ensureAssetYardLocations: async () => {
+    const yards = [
+      { key: ASSET_DIRTY_SYSTEM_KEY, name: 'Área suja', aliases: ['área suja', 'area suja'], sort_order: 100 },
+      { key: ASSET_CLEAN_SYSTEM_KEY, name: 'Área limpa', aliases: ['área limpa', 'area limpa'], sort_order: 101 },
+    ] as const;
+    for (const yard of yards) {
+      const existing = get().locations.find((location) => location.system_key === yard.key);
+      if (existing) continue;
+      const byName = get().locations.find((location) =>
+        (yard.aliases as readonly string[]).includes(location.name.trim().toLowerCase())
+      );
+      if (byName) {
+        await get().updateLocation(byName.id, {
+          system_key: yard.key,
+          requires_box: false,
+          is_active: true,
+        });
+        continue;
+      }
+      await get().createLocation({
+        name: yard.name,
+        type: 'other',
+        is_active: true,
+        sort_order: yard.sort_order,
+        requires_box: false,
+        system_key: yard.key,
+      });
+    }
+  },
+
+  ensureSeparationJobs: async () => {
+    const state = get();
+    const missing = state.orders.filter(
+      (order) =>
+        order.status !== 'cancelled' &&
+        order.status !== 'completed' &&
+        !state.separationJobs.some((job) => job.order_id === order.id)
+    );
+    if (missing.length === 0) return;
+    const created: SeparationJob[] = [];
+    for (const order of missing) {
+      const job = blankSeparationJob(order.id, jobStageFromOrder(order.status));
+      try {
+        await persistSeparationJob(job);
+        created.push(job);
+      } catch (error) {
+        if (error instanceof Error && /duplicate|unique/i.test(error.message)) continue;
+      }
+    }
+    if (created.length === 0) return;
+    set((s) => ({
+      separationJobs: [
+        ...s.separationJobs,
+        ...created.filter((job) => !s.separationJobs.some((row) => row.order_id === job.order_id)),
+      ],
+    }));
+  },
+
   createAsset: async (data) => {
     const now = new Date().toISOString();
     const newAsset: Asset = {
@@ -828,8 +942,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (error) {
       set({ error: error.message, isLoading: false });
     } else {
-      set({ separationJobs: data || [], isLoading: false });
+      set({
+        separationJobs: (data || []).map((job) => ({
+          ...job,
+          pickup_vehicle: job.pickup_vehicle ?? null,
+        })),
+        isLoading: false,
+      });
     }
+  },
+
+  refreshSeparationLive: async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const { data: orders, error: ordersError } = await supabase
+      .from('orders')
+      .select('*')
+      .order('created_at', { ascending: false });
+    const { data: items, error: itemsError } = await supabase.from('order_items').select('*');
+    const { data: jobs, error: jobsError } = await supabase.from('separation_jobs').select('*');
+    if (ordersError || itemsError || jobsError) return;
+    rememberCodes((orders || []).map((row) => row.order_number));
+    set({
+      orders: orders || [],
+      orderItems: items || [],
+      separationJobs: (jobs || []).map((job) => ({
+        ...job,
+        pickup_vehicle: job.pickup_vehicle ?? null,
+      })),
+    });
+    await get().ensureSeparationJobs();
   },
   
   fetchInventoryCounts: async () => {
@@ -2120,6 +2261,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   
   createMovement: async (data) => {
     const now = new Date().toISOString();
+    rememberCodes(get().movements.map((row) => row.movement_number));
+    if (isSupabaseConfigured && supabase) {
+      const { data: numbers } = await supabase.from('movements').select('movement_number');
+      rememberCodes((numbers || []).map((row) => row.movement_number));
+    }
     const movement: Movement = {
       id: generateId(),
       movement_number: generateMovementNumber(),
@@ -2141,8 +2287,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     
     if (isSupabaseConfigured && supabase) {
-      const { error } = await supabase.from('movements').insert(movement);
-      if (error) throw new Error(error.message);
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const { error } = await supabase.from('movements').insert(movement);
+        if (!error) break;
+        if (!/movement_number|duplicate key|unique/i.test(error.message) || attempt === 7) {
+          throw new Error(error.message);
+        }
+        usedCodes.add(movement.movement_number.toUpperCase());
+        movement.movement_number = generateMovementNumber();
+      }
     }
     
     set(s => ({ movements: [movement, ...s.movements] }));
@@ -2210,6 +2363,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       delivery_driver: null,
       pickup_driver: null,
       vehicle: null,
+      pickup_vehicle: null,
       departure_at: null,
       return_at: null,
       stage: 'a_separar',
@@ -2264,7 +2418,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (retry.error) throw new Error(retry.error.message);
       }
       await supabase.from('order_items').insert(orderItems);
-      await supabase.from('separation_jobs').insert(separationJob);
+      await persistSeparationJob(separationJob);
       if (reservations.length) await supabase.from('equipment_reservations').insert(reservations);
       if (uniformCheckouts.length) await supabase.from('uniform_checkouts').insert(uniformCheckouts);
       for (const assetId of stayOutEquipment) {
@@ -2568,7 +2722,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const now = new Date().toISOString();
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase.from('separation_jobs').update({ ...data, updated_at: now }).eq('id', id);
-      if (error) throw new Error(error.message);
+      if (error && /pickup_vehicle/i.test(error.message) && 'pickup_vehicle' in data) {
+        const { pickup_vehicle: _ignored, ...rest } = data;
+        const retry = await supabase.from('separation_jobs').update({ ...rest, updated_at: now }).eq('id', id);
+        if (retry.error) throw new Error(retry.error.message);
+      } else if (error) {
+        throw new Error(error.message);
+      }
     }
     set(s => ({
       separationJobs: s.separationJobs.map(j => j.id === id ? { ...j, ...data, updated_at: now } : j)
@@ -2583,6 +2743,295 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({
       orderItems: s.orderItems.map((item) => (item.id === id ? { ...item, ...data } : item)),
     }));
+  },
+
+  closeSeparationOrder: async (orderId, units, notes) => {
+    const order = get().orders.find((row) => row.id === orderId);
+    const job = get().separationJobs.find((row) => row.order_id === orderId);
+    if (!order || !job) throw new Error('Pedido não encontrado.');
+    if (job.stage === 'retorno') return;
+
+    const items = get().orderItems.filter((row) => row.order_id === orderId);
+    const now = new Date().toISOString();
+    const closeOut = {
+      closed_at: now,
+      notes: notes || undefined,
+      lines: closeOutLinesFromUnits(items, units),
+      units,
+    };
+
+    await get().updateOrder(orderId, {
+      status: 'retorno',
+      return_description: JSON.stringify(closeOut),
+    });
+    await get().updateSeparationJob(job.id, { stage: 'retorno' });
+
+    const openReservations = get().equipmentReservations.filter(
+      (row) => row.order_id === orderId && row.status === 'active'
+    );
+    if (openReservations.length && isSupabaseConfigured && supabase) {
+      const { error } = await supabase
+        .from('equipment_reservations')
+        .update({ status: 'completed' })
+        .eq('order_id', orderId)
+        .eq('status', 'active');
+      if (error) throw new Error(error.message);
+    }
+    if (openReservations.length) {
+      set((s) => ({
+        equipmentReservations: s.equipmentReservations.map((row) =>
+          row.order_id === orderId && row.status === 'active' ? { ...row, status: 'completed' } : row
+        ),
+      }));
+    }
+
+    const unitsByItem = new Map<string, ReturnUnit[]>();
+    for (const unit of units) {
+      const list = unitsByItem.get(unit.item_id) || [];
+      list.push(unit);
+      unitsByItem.set(unit.item_id, list);
+    }
+
+    for (const item of items.filter((row) => row.is_returnable)) {
+      const itemUnits = (unitsByItem.get(item.id) || []).sort((a, b) => a.unit_index - b.unit_index);
+      if (item.asset_id) {
+        const unit = itemUnits[0];
+        if (!unit) continue;
+        const status = returnUnitAssetStatus(unit.condition);
+        const locationId = unit.condition === 'lost' ? null : unit.location_id;
+        await get().updateAsset(item.asset_id, {
+          status,
+          location_id: locationId,
+          last_moved_at: now,
+        });
+        await get().createMovement({
+          type: unit.condition === 'lost' ? 'dispatch' : 'return',
+          order_id: orderId,
+          asset_id: item.asset_id,
+          quantity: 1,
+          to_location_id: locationId || undefined,
+          reason: `Retorno ${order.order_number}`,
+          notes: `${item.name} · ${unit.condition}`,
+        });
+        continue;
+      }
+
+      if (!item.code.startsWith('UNI-')) continue;
+
+      const checkout = get().uniformCheckouts.find(
+        (row) =>
+          row.order_id === orderId &&
+          row.status === 'out' &&
+          checkoutMatchesItem(row, item, get().uniforms)
+      );
+      const lostN = itemUnits.filter((unit) => unit.condition === 'lost').length;
+      const backN = itemUnits.length - lostN;
+      if (checkout) {
+        if (lostN === 0) {
+          if (isSupabaseConfigured && supabase) {
+            const { error } = await supabase
+              .from('uniform_checkouts')
+              .update({ status: 'returned', returned_at: now })
+              .eq('id', checkout.id);
+            if (error) throw new Error(error.message);
+          }
+          set((s) => ({
+            uniformCheckouts: s.uniformCheckouts.map((row) =>
+              row.id === checkout.id ? { ...row, status: 'returned', returned_at: now } : row
+            ),
+          }));
+        } else if (backN === 0) {
+          if (isSupabaseConfigured && supabase) {
+            const { error } = await supabase
+              .from('uniform_checkouts')
+              .update({ notes: UNIFORM_STAY_OUT_NOTE })
+              .eq('id', checkout.id);
+            if (error) throw new Error(error.message);
+          }
+          set((s) => ({
+            uniformCheckouts: s.uniformCheckouts.map((row) =>
+              row.id === checkout.id ? { ...row, notes: UNIFORM_STAY_OUT_NOTE } : row
+            ),
+          }));
+        } else {
+          const returnedRow = {
+            id: generateId(),
+            uniform_id: checkout.uniform_id,
+            order_id: orderId,
+            size: checkout.size,
+            quantity: Math.max(1, backN),
+            status: 'returned' as const,
+            checked_out_at: checkout.checked_out_at,
+            returned_at: now,
+            notes: null,
+            created_at: now,
+          };
+          if (isSupabaseConfigured && supabase) {
+            const stay = await supabase
+              .from('uniform_checkouts')
+              .update({
+                quantity: Math.max(1, lostN),
+                notes: UNIFORM_STAY_OUT_NOTE,
+              })
+              .eq('id', checkout.id);
+            if (stay.error) throw new Error(stay.error.message);
+            const inserted = await supabase.from('uniform_checkouts').insert(returnedRow);
+            if (inserted.error) throw new Error(inserted.error.message);
+          }
+          set((s) => ({
+            uniformCheckouts: [
+              ...s.uniformCheckouts.map((row) =>
+                row.id === checkout.id
+                  ? { ...row, quantity: Math.max(1, lostN), notes: UNIFORM_STAY_OUT_NOTE }
+                  : row
+              ),
+              returnedRow,
+            ],
+          }));
+        }
+      }
+
+      for (const unit of itemUnits) {
+        const status = returnUnitAssetStatus(unit.condition);
+        const locationId = unit.condition === 'lost' ? null : unit.location_id;
+        const code = suggestedAssetCode(
+          'uniforme',
+          get().assets.map((asset) => asset.code)
+        );
+        const asset = await get().createAsset({
+          code,
+          name: itemUnits.length > 1 ? `${item.name} · ${unit.unit_index + 1}` : item.name,
+          type: 'other',
+          category: 'uniforme',
+          status,
+          location_id: locationId,
+          last_moved_at: now,
+          sku_code: `${item.id}:${unit.unit_index}`,
+          description: `${order.order_number} · retorno`,
+        });
+        await get().createMovement({
+          type: unit.condition === 'lost' ? 'dispatch' : 'return',
+          order_id: orderId,
+          asset_id: asset.id,
+          quantity: 1,
+          to_location_id: locationId || undefined,
+          reason: `Retorno ${order.order_number}`,
+          notes: `${item.name} · ${unit.condition}`,
+        });
+      }
+    }
+  },
+
+  dispatchOrderItem: async (orderId, itemId) => {
+    const item = get().orderItems.find((row) => row.id === itemId && row.order_id === orderId);
+    if (!item) throw new Error('Item não encontrado.');
+    if (item.is_checked) return;
+
+    const order = get().orders.find((row) => row.id === orderId);
+    const now = new Date().toISOString();
+    const reason = `Separação ${order?.order_number || ''}`.trim();
+
+    if (item.asset_id) {
+      const asset = get().assets.find((row) => row.id === item.asset_id);
+      if (asset && asset.status !== 'lost' && asset.status !== 'written_off') {
+        await get().updateAsset(item.asset_id, { status: 'in_use', last_moved_at: now });
+      }
+      await get().createMovement({
+        type: 'dispatch',
+        order_id: orderId,
+        asset_id: item.asset_id,
+        quantity: item.quantity,
+        reason,
+        notes: item.name,
+      });
+    } else if (item.code.startsWith('UNI-')) {
+      await get().createMovement({
+        type: 'dispatch',
+        order_id: orderId,
+        quantity: item.quantity,
+        reason,
+        notes: `${item.name} · na rua`,
+      });
+    } else if (item.product_id) {
+      const product = get().products.find((row) => row.id === item.product_id);
+      let remaining = item.quantity;
+      if (product?.kind === 'material') {
+        const lots = get()
+          .materialStock.filter(
+            (row) =>
+              row.product_id === item.product_id &&
+              row.quantity > 0 &&
+              row.status === 'available'
+          )
+          .sort((a, b) => a.created_at.localeCompare(b.created_at));
+        const onHand = lots.reduce((sum, row) => sum + row.quantity, 0);
+        if (onHand < remaining) {
+          throw new Error(`Estoque insuficiente para ${item.name} (${remaining} ${item.unit}).`);
+        }
+        for (const lot of lots) {
+          if (remaining <= 0) break;
+          const fresh = get().materialStock.find((row) => row.id === lot.id);
+          if (!fresh || fresh.quantity <= 0) continue;
+          const take = Math.min(fresh.quantity, remaining);
+          await get().updateMaterialStock(fresh.id, { quantity: fresh.quantity - take });
+          await get().createMovement({
+            type: 'dispatch',
+            order_id: orderId,
+            quantity: take,
+            quantity_before: fresh.quantity,
+            quantity_after: fresh.quantity - take,
+            from_location_id: fresh.location_id,
+            reason,
+            notes: item.name,
+          });
+          remaining -= take;
+        }
+      } else {
+        const wanted = item.requested_state;
+        const lots = get()
+          .stock.filter(
+            (row) =>
+              row.product_id === item.product_id &&
+              row.quantity > 0 &&
+              row.status === 'available' &&
+              (!wanted || physicalStateOf(row) === wanted)
+          )
+          .sort((a, b) => {
+            if (a.is_active_separation !== b.is_active_separation) return a.is_active_separation ? -1 : 1;
+            return (a.fifo_date || a.created_at).localeCompare(b.fifo_date || b.created_at);
+          });
+        const onHand = lots.reduce((sum, row) => sum + row.quantity, 0);
+        if (onHand < remaining) {
+          throw new Error(`Estoque insuficiente para ${item.name} (${remaining} ${item.unit}).`);
+        }
+        for (const lot of lots) {
+          if (remaining <= 0) break;
+          const fresh = get().stock.find((row) => row.id === lot.id);
+          if (!fresh || fresh.quantity <= 0) continue;
+          const take = Math.min(fresh.quantity, remaining);
+          const left = fresh.quantity - take;
+          await get().updateStock(fresh.id, {
+            quantity: left,
+            status: left > 0 ? fresh.status : 'depleted',
+          });
+          await get().createMovement({
+            type: 'dispatch',
+            stock_id: fresh.id,
+            order_id: orderId,
+            asset_id: fresh.asset_id || undefined,
+            quantity: take,
+            quantity_before: fresh.quantity,
+            quantity_after: left,
+            from_location_id: fresh.location_id,
+            reason,
+            notes: item.name,
+          });
+          remaining -= take;
+        }
+      }
+    }
+
+    await get().updateOrderItem(itemId, { is_checked: true });
   },
   
   updateInventoryCount: async (id, data) => {

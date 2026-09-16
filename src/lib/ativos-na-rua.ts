@@ -1,5 +1,5 @@
 import { checkoutStaysOut } from "@/lib/kit-availability";
-import { parseCloseOut, unreturnedQty } from "@/lib/separacao";
+import { locationSummary, parseCloseOut, unreturnedQty } from "@/lib/separacao";
 import type { Asset, Order, OrderItem, Uniform, UniformCheckout } from "@/types/database";
 
 export type StreetAssetRow = {
@@ -29,7 +29,7 @@ function formatWhen(value?: string | null) {
 }
 
 function whereLabel(order: Order) {
-  return [order.organization, order.recipient_name, order.address].filter(Boolean).join(" · ") || "—";
+  return [order.organization, order.recipient_name, locationSummary(order)].filter(Boolean).join(" · ") || "—";
 }
 
 export function checkoutMatchesItem(
@@ -89,7 +89,7 @@ export function streetAssets(
       where,
       organization: order.organization,
       recipient: order.recipient_name,
-      address: order.address || "—",
+      address: locationSummary(order),
       orderNumber: order.order_number,
       orderId: order.id,
       since: formatWhen(order.needed_date),
@@ -121,7 +121,7 @@ export function streetAssets(
       where,
       organization: order?.organization || "—",
       recipient: order?.recipient_name || "—",
-      address: order?.address || "—",
+      address: order ? locationSummary(order) : "—",
       orderNumber,
       orderId: order?.id || "",
       since: formatWhen(checkout.checked_out_at),

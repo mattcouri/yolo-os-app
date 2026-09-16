@@ -17,12 +17,14 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { FulfillmentMethod, OrderType, PhysicalState, Profile, UniformSize } from "@/types/database";
 import { UNIFORM_SIZES } from "@/lib/uniforms";
 import { checkoutStaysOut, availableForSizeOnWindow, equipmentBlock } from "@/lib/kit-availability";
+import { TYPE_LABEL, isYoloTrip, locationSummary, needsOrderAddress, tripSummary } from "@/lib/separacao";
+import { StageTag, stageTagFromStatus } from "@/components/separacao/stage-tag";
 
 const REQUEST_TYPES: { value: OrderType; label: string; hint: string }[] = [
   { value: "venda", label: "Venda", hint: "Cliente paga" },
   { value: "evento", label: "Evento", hint: "Com retorno" },
   { value: "amostra", label: "Amostra", hint: "Cortesia" },
-  { value: "solicitacao_interna", label: "Interna", hint: "Uso YOLO" },
+  { value: "solicitacao_interna", label: "Interno", hint: "Uso YOLO" },
 ];
 
 type LineKind = "pop" | "material";
@@ -70,18 +72,17 @@ function joinDateTime(date: string, time: string) {
 
 const selectClass = "flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm";
 
-const DELIVERY_METHODS: { value: FulfillmentMethod; label: string }[] = [
-  { value: "entrega_yolo", label: "Entrega YOLO" },
-  { value: "retirada_yolo", label: "Retirada no CD" },
-  { value: "uso_interno", label: "Uso interno" },
-  { value: "transportadora", label: "Transportadora" },
+const DELIVERY_METHODS: { value: FulfillmentMethod; label: string; hint: string }[] = [
+  { value: "entrega_yolo", label: "Entrega YOLO", hint: "YOLO leva — motorista e endereço" },
+  { value: "retirada_yolo", label: "Retirada no CD", hint: "Cliente busca no CD" },
+  { value: "uso_interno", label: "Uso interno", hint: "Não sai do CD" },
+  { value: "transportadora", label: "Transportadora", hint: "Sai com transportadora — endereço" },
 ];
 
-const PICKUP_METHODS: { value: FulfillmentMethod; label: string }[] = [
-  { value: "entrega_yolo", label: "Coleta YOLO" },
-  { value: "retirada_yolo", label: "Devolução no CD" },
-  { value: "uso_interno", label: "Não se aplica" },
-  { value: "transportadora", label: "Transportadora" },
+const PICKUP_METHODS: { value: FulfillmentMethod; label: string; hint: string }[] = [
+  { value: "entrega_yolo", label: "Coleta YOLO", hint: "YOLO busca o retorno — motorista e endereço" },
+  { value: "retirada_yolo", label: "Devolução no CD", hint: "Cliente devolve no CD" },
+  { value: "transportadora", label: "Transportadora", hint: "Volta com transportadora — endereço" },
 ];
 
 export function OrderRequestPage() {
@@ -161,7 +162,16 @@ export function OrderRequestPage() {
   const isEditing = Boolean(orderId);
   const isEvent = orderType === "evento";
   const isInternal = orderType === "solicitacao_interna";
-  const needsAddress = fulfillment !== "uso_interno" && fulfillment !== "retirada_yolo";
+  const hasReturningKit = returningAssetIds.length > 0 || returningUniformIds.length > 0;
+  const showPickup = isEvent || hasReturningKit;
+  const needsAddress = needsOrderAddress(fulfillment, pickupFulfillment, showPickup);
+  const deliveryOptions = DELIVERY_METHODS.filter((method) => isInternal || method.value !== "uso_interno");
+  const addressLabel =
+    isYoloTrip(fulfillment) && showPickup && isYoloTrip(pickupFulfillment)
+      ? "Endereço"
+      : showPickup && isYoloTrip(pickupFulfillment) && !isYoloTrip(fulfillment)
+        ? "Endereço da coleta"
+        : "Endereço da entrega";
 
   useEffect(() => {
     void fetchProducts();
@@ -217,6 +227,14 @@ export function OrderRequestPage() {
       setOrganization((current) => current || "YOLO");
     }
   }, [orderType, orderId]);
+
+  useEffect(() => {
+    if (!isInternal && fulfillment === "uso_interno") setFulfillment("entrega_yolo");
+  }, [isInternal, fulfillment]);
+
+  useEffect(() => {
+    if (showPickup && pickupFulfillment === "uso_interno") setPickupFulfillment("retirada_yolo");
+  }, [showPickup, pickupFulfillment]);
 
   const pickerReservations = useMemo(
     () => equipmentReservations.filter((row) => row.order_id !== orderId),
@@ -390,7 +408,7 @@ export function OrderRequestPage() {
       setError("Evento precisa de nome, início (dia e hora) e fim (dia e hora).");
       return;
     }
-    if (isEvent && !pickupAt) {
+    if (showPickup && !pickupAt) {
       setError("Informe o dia e a hora da retirada.");
       return;
     }
@@ -501,12 +519,12 @@ export function OrderRequestPage() {
         needed_date: neededDate,
         needed_time: neededTime,
         fulfillment,
-        pickup_fulfillment: isEvent ? pickupFulfillment : undefined,
+        pickup_fulfillment: showPickup ? pickupFulfillment : undefined,
         address: needsAddress ? address.trim() : undefined,
         event_name: isEvent ? eventName.trim() : undefined,
         event_start: isEvent ? eventStart : undefined,
         event_end: isEvent ? eventEnd : undefined,
-        pickup_at: isEvent ? pickupAt || undefined : undefined,
+        pickup_at: showPickup ? pickupAt || undefined : undefined,
         onsite_contact: isEvent ? recipientContact.trim() : undefined,
         reserve_from: equipmentIds.length || uniformLines.length ? reserveFrom : undefined,
         reserve_until: equipmentIds.length || uniformLines.length ? reserveUntil : undefined,
@@ -673,7 +691,9 @@ export function OrderRequestPage() {
 
         <Card>
           <CardContent className="space-y-3 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Detalhes de Entrega</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {showPickup ? "Detalhes de Entrega e Retirada" : "Detalhes de Entrega"}
+            </p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-1.5">
                 <Label>Entrega</Label>
@@ -682,12 +702,15 @@ export function OrderRequestPage() {
                   value={fulfillment}
                   onChange={(e) => setFulfillment(e.target.value as FulfillmentMethod)}
                 >
-                  {DELIVERY_METHODS.map((method) => (
+                  {deliveryOptions.map((method) => (
                     <option key={method.value} value={method.value}>
                       {method.label}
                     </option>
                   ))}
                 </select>
+                <p className="text-[11px] text-muted-foreground">
+                  {deliveryOptions.find((method) => method.value === fulfillment)?.hint}
+                </p>
               </div>
               <div className="space-y-1.5">
                 <Label>Dia</Label>
@@ -698,13 +721,13 @@ export function OrderRequestPage() {
                 <TimeSelect value={neededTime} onChange={setNeededTime} required />
               </div>
             </div>
-            {isEvent && (
+            {showPickup && (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="space-y-1.5">
                   <Label>Retirada</Label>
                   <select
                     className={selectClass}
-                    value={pickupFulfillment}
+                    value={pickupFulfillment === "uso_interno" ? "retirada_yolo" : pickupFulfillment}
                     onChange={(e) => setPickupFulfillment(e.target.value as FulfillmentMethod)}
                   >
                     {PICKUP_METHODS.map((method) => (
@@ -713,18 +736,31 @@ export function OrderRequestPage() {
                       </option>
                     ))}
                   </select>
+                  <p className="text-[11px] text-muted-foreground">
+                    {PICKUP_METHODS.find((method) => method.value === pickupFulfillment)?.hint}
+                  </p>
                 </div>
                 <div className="space-y-1.5">
                   <Label>Dia</Label>
-                  <Input type="date" value={pickupDate} onChange={(e) => setPickupDate(e.target.value)} required={isEvent} />
+                  <Input type="date" value={pickupDate} onChange={(e) => setPickupDate(e.target.value)} required={showPickup} />
                 </div>
                 <div className="space-y-1.5">
                   <Label>Hora</Label>
-                  <TimeSelect value={pickupTime} onChange={setPickupTime} required={isEvent} />
+                  <TimeSelect value={pickupTime} onChange={setPickupTime} required={showPickup} />
                 </div>
               </div>
             )}
-            {needsAddress && <AddressSearch value={address} onChange={setAddress} required />}
+            {needsAddress ? (
+              <AddressSearch value={address} onChange={setAddress} required label={addressLabel} />
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                {fulfillment === "uso_interno"
+                  ? "Uso interno: sem motorista e sem endereço."
+                  : showPickup && pickupFulfillment === "retirada_yolo"
+                    ? "Cliente busca e devolve no CD: sem motorista e sem endereço."
+                    : "Retirada no CD: sem motorista e sem endereço de entrega."}
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -891,23 +927,6 @@ export function OrderRequestPage() {
   );
 }
 
-const STAGE_LABEL: Record<string, string> = {
-  received: "Recebido",
-  a_separar: "A separar",
-  em_separacao: "Em separação",
-  na_rua: "Na rua",
-  retorno: "Retorno",
-  completed: "Concluído",
-  cancelled: "Cancelado",
-};
-
-const TYPE_LABEL: Record<string, string> = {
-  venda: "Venda",
-  evento: "Evento",
-  amostra: "Amostra",
-  solicitacao_interna: "Interna",
-};
-
 export function OrderListPage() {
   const { orders, orderItems, separationJobs, cancelPlacedOrder } = useAppStore();
   const location = useLocation();
@@ -968,23 +987,28 @@ export function OrderListPage() {
             const items = orderItems.filter((item) => item.order_id === order.id);
             const job = separationJobs.find((row) => row.order_id === order.id);
             const checked = items.filter((item) => item.is_checked).length;
+            const trip = tripSummary(order, items);
             return (
               <div
                 key={order.id}
                 className="flex items-center gap-2 rounded-xl border p-3 hover:border-primary/40"
               >
                 <Link to={`/separacao/${order.id}`} className="min-w-0 flex-1">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-primary">
+                    {TYPE_LABEL[order.order_type] || order.order_type}
+                  </p>
                   <p className="truncate text-sm font-semibold">
-                    {order.order_number} · {TYPE_LABEL[order.order_type] || order.order_type} · {order.organization}
+                    {order.order_number} · {order.organization}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {new Date(`${order.needed_date}T00:00:00`).toLocaleDateString("pt-BR")} · {order.needed_time} · {checked}/{items.length} conferidos
-                    {job?.delivery_driver ? ` · ${job.delivery_driver}` : ""}
+                    {new Date(`${order.needed_date}T00:00:00`).toLocaleDateString("pt-BR")} · {order.needed_time}
+                    {` · ${trip.outbound}${trip.inbound ? ` · ${trip.inbound}` : ""}`}
+                    {` · ${checked}/${items.length} conferidos`}
+                    {job?.delivery_driver && isYoloTrip(order.fulfillment) ? ` · ${job.delivery_driver}` : ""}
                   </p>
+                  <p className="truncate text-[11px] text-muted-foreground">{locationSummary(order, items)}</p>
                 </Link>
-                <Badge variant={job?.stage === "na_rua" ? "secondary" : "outline"}>
-                  {STAGE_LABEL[job?.stage || order.status] || order.status}
-                </Badge>
+                <StageTag {...stageTagFromStatus(job?.stage || order.status)} />
                 <Button asChild variant="outline" size="icon" className="h-9 w-9 shrink-0" title="Editar">
                   <Link to={`/pedidos/${order.id}/editar`} onClick={(e) => e.stopPropagation()}>
                     <Pencil className="h-4 w-4" />

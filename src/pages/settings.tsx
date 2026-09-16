@@ -738,7 +738,7 @@ export function SettingsPage() {
                       <div className="flex items-center gap-2">
                         <MapPin className="w-3.5 h-3.5 text-muted-foreground" />
                         <span className="font-medium">{item.name}</span>
-                        {item.system_key === "assembled" && (
+                        {item.system_key && (
                           <Badge variant="outline" className="text-[10px] font-normal">Sistema</Badge>
                         )}
                       </div>

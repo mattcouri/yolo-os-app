@@ -4,6 +4,7 @@ import type {
   AssetStatus,
   AssetType,
   AssetComponent,
+  Location,
 } from "@/types/database";
 
 export const BOX_ASSET_TYPES: AssetType[] = [
@@ -37,6 +38,7 @@ export const ASSET_CATEGORIES: { value: string; label: string }[] = [
   { value: "eletronico", label: "Eletrônico" },
   { value: "ferramenta", label: "Ferramenta" },
   { value: "maquina", label: "Máquina" },
+  { value: "uniforme", label: "Uniforme" },
   { value: "other", label: "Outro" },
 ];
 
@@ -52,6 +54,7 @@ export const OPERATIONAL_STATUSES: { value: AssetStatus; label: string }[] = [
   { value: "in_use", label: "Em uso" },
   { value: "in_transit", label: "Em trânsito" },
   { value: "returned_pending", label: "Retornado — aguardando conferência" },
+  { value: "inspection", label: "Inspeção" },
   { value: "cleaning", label: "Aguardando limpeza" },
   { value: "maintenance", label: "Aguardando manutenção" },
   { value: "damaged", label: "Danificado" },
@@ -87,6 +90,7 @@ const CATEGORY_PREFIX: Record<string, string> = {
   eletronico: "EL",
   ferramenta: "FER",
   maquina: "MAQ",
+  uniforme: "UNI",
   other: "ATV",
 };
 
@@ -96,6 +100,60 @@ export function categoryLabel(value?: string | null) {
 
 export function statusLabel(status: string) {
   return OPERATIONAL_STATUSES.find((s) => s.value === status)?.label || status;
+}
+
+export const ASSET_DIRTY_SYSTEM_KEY = "asset_dirty";
+export const ASSET_CLEAN_SYSTEM_KEY = "asset_clean";
+
+export const EXCEPTION_ASSET_STATUSES: AssetStatus[] = [
+  "damaged",
+  "lost",
+  "written_off",
+  "incomplete",
+];
+
+export function dirtyLocation(locations: Location[]) {
+  return locations.find((location) => location.system_key === ASSET_DIRTY_SYSTEM_KEY);
+}
+
+export function cleanLocation(locations: Location[]) {
+  return locations.find((location) => location.system_key === ASSET_CLEAN_SYSTEM_KEY);
+}
+
+export function planAssetPlacement(
+  asset: Pick<Asset, "status" | "location_id">,
+  change: { status?: AssetStatus; locationId?: string | null },
+  locations: Location[],
+  hasActiveReservation: boolean
+): { status: AssetStatus; location_id: string | null; error?: string } {
+  const dirty = dirtyLocation(locations);
+  const clean = cleanLocation(locations);
+  let status = change.status ?? asset.status;
+  let location_id = change.locationId !== undefined ? change.locationId : asset.location_id;
+  const keepsException =
+    EXCEPTION_ASSET_STATUSES.includes(asset.status) && change.status === undefined;
+
+  if (change.locationId !== undefined && !keepsException) {
+    if (dirty && change.locationId === dirty.id) status = "cleaning";
+    if (clean && change.locationId === clean.id) status = "available";
+  }
+
+  if (change.status !== undefined) {
+    status = change.status;
+    if (status === "cleaning" && dirty) location_id = dirty.id;
+    if (status === "available" && clean) location_id = clean.id;
+  }
+
+  if (status === "available" && hasActiveReservation) {
+    return {
+      status: asset.status,
+      location_id: asset.location_id,
+      error:
+        "Este ativo ainda está reservado em um pedido. Encerre o retorno antes de marcar como disponível.",
+    };
+  }
+
+  return { status, location_id };
 }
 
 export function controlLabel(method?: string | null) {

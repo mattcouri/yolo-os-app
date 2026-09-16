@@ -441,6 +441,7 @@ export interface SeparationJob {
   delivery_driver: string | null;
   pickup_driver: string | null;
   vehicle: string | null;
+  pickup_vehicle?: string | null;
   departure_at: string | null;
   return_at: string | null;
   stage: SeparationStage;

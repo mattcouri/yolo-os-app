@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import {
   ChevronDown,
@@ -476,13 +476,22 @@ export function AtivosPanel() {
           <div>
             <CardTitle className="text-base font-medium">Ativos</CardTitle>
             <CardDescription className="text-xs">
-              Equipamentos e materiais operacionais: freezers, carrinhos, kits e itens de evento
+              Ficha, QR e cadastro. Status e local do pátio ficam em{" "}
+              <Link to="/gestao/ativos" className="underline underline-offset-2">
+                Gestão · Ativos
+              </Link>
+              .
             </CardDescription>
           </div>
-          <Button size="sm" className="h-8 text-xs" onClick={openCreate}>
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            Novo ativo
-          </Button>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" className="h-8 text-xs" asChild>
+              <Link to="/gestao/ativos">Pátio</Link>
+            </Button>
+            <Button size="sm" className="h-8 text-xs" onClick={openCreate}>
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              Novo ativo
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="pt-0">

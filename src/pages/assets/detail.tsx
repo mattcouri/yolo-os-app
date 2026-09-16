@@ -35,7 +35,7 @@ export function AssetDetailPage() {
     return (
       <div className="space-y-4">
         <p className="text-muted-foreground">Ativo não encontrado.</p>
-        <Button variant="outline" onClick={() => navigate("/gestao/settings")}>Voltar aos cadastros</Button>
+        <Button variant="outline" onClick={() => navigate("/gestao/ativos")}>Voltar aos ativos</Button>
       </div>
     );
   }
@@ -63,9 +63,9 @@ export function AssetDetailPage() {
     <div className="space-y-6 pb-10">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <Link to="/gestao/settings" className="mb-2 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <Link to="/gestao/ativos" className="mb-2 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
             <ArrowLeft className="h-4 w-4" />
-            Cadastros · Ativos
+            Ativos
           </Link>
           <h1 className="text-2xl font-semibold tracking-tight">{asset.name}</h1>
           <p className="text-sm text-muted-foreground">

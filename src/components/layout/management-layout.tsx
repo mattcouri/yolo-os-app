@@ -17,6 +17,7 @@ import {
   BarChart3,
   Users,
   Grid3X3,
+  Wrench,
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
@@ -27,6 +28,7 @@ const navItems = [
   { icon: Package, label: "Inventário", path: "/gestao/inventory" },
   { icon: FileText, label: "Notas Fiscais", path: "/gestao/receipts" },
   { icon: Box, label: "Embalagens", path: "/gestao/packaging" },
+  { icon: Wrench, label: "Ativos", path: "/gestao/ativos" },
   { icon: Settings, label: "Cadastros", path: "/gestao/settings" },
   { icon: History, label: "Movimentações", path: "/gestao/movements" },
   { icon: BarChart3, label: "Relatórios", path: "/gestao/reports" },
@@ -123,7 +125,10 @@ export function ManagementLayout({ children }: ManagementLayoutProps) {
           {navItems
             .filter((item) => item.path !== "/gestao/users" || canManageUsers)
             .map((item) => {
-            const isActive = location.pathname === item.path;
+            const isActive =
+              item.path === "/gestao"
+                ? location.pathname === "/gestao"
+                : location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
             return (
               <Link
                 key={item.path}
