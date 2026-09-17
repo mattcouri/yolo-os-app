@@ -165,6 +165,9 @@ export interface Asset {
   weight_kg?: number | null;
   capacity?: string | null;
   unit_capacity?: number | null;
+  length_cm?: number | null;
+  width_cm?: number | null;
+  height_cm?: number | null;
   color?: string | null;
   operating_temp?: string | null;
   handling_notes?: string | null;

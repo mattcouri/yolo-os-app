@@ -15,7 +15,7 @@ import { QRCodeSVG } from "qrcode.react";
 import type { Location, Product, Asset } from "@/types/database";
 import { AtivosPanel } from "@/pages/settings/ativos-panel";
 import { UniformesPanel } from "@/pages/settings/uniformes-panel";
-import { cleanLocation, isBoxAsset, isUniformAsset } from "@/lib/operational-assets";
+import { cleanLocation, formatBoxOuterMeasures, isBoxAsset, isUniformAsset } from "@/lib/operational-assets";
 import { assetYardLocations, orderedAssetYardLocations, productStockLocations } from "@/lib/locations";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
@@ -79,9 +79,23 @@ const emptyAssetForm = {
   description: "",
   type: "caixa_media",
   unit_capacity: "",
+  length_cm: "",
+  width_cm: "",
+  height_cm: "",
   photo_url: "",
   location_id: "",
 };
+
+function parseCmField(value: string, label: string): number | null | undefined {
+  const trimmed = value.trim().replace(",", ".");
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    alert(`Informe ${label} em centímetros, com um número maior que zero.`);
+    return undefined;
+  }
+  return parsed;
+}
 
 async function uploadBoxPhoto(file: File) {
   if (!isSupabaseConfigured || !supabase) return URL.createObjectURL(file);
@@ -704,6 +718,18 @@ export function SettingsPage() {
         }
       }
 
+      const length_cm =
+        assetDialog.assetType === "box" ? parseCmField(assetFormData.length_cm, "o comprimento") : null;
+      if (length_cm === undefined) return;
+      const width_cm =
+        assetDialog.assetType === "box" ? parseCmField(assetFormData.width_cm, "a largura") : null;
+      if (width_cm === undefined) return;
+      const height_cm =
+        assetDialog.assetType === "box" ? parseCmField(assetFormData.height_cm, "a altura") : null;
+      if (height_cm === undefined) return;
+      const dimensions =
+        assetDialog.assetType === "box" ? formatBoxOuterMeasures({ length_cm, width_cm, height_cm }) || null : undefined;
+
       if (assetDialog.assetType === "box" && !assetFormData.location_id) {
         alert("Escolha o local da caixa.");
         return;
@@ -716,6 +742,10 @@ export function SettingsPage() {
           description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
           unit_capacity: unitCapacity,
+          length_cm,
+          width_cm,
+          height_cm,
+          dimensions,
           photo_url: assetFormData.photo_url || null,
           location_id: assetFormData.location_id || boxHomeLocationId,
           status: "available",
@@ -728,6 +758,10 @@ export function SettingsPage() {
           description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
           unit_capacity: unitCapacity,
+          length_cm,
+          width_cm,
+          height_cm,
+          dimensions,
           photo_url: assetFormData.photo_url || null,
           location_id: assetFormData.location_id || boxHomeLocationId,
         });
@@ -785,6 +819,9 @@ export function SettingsPage() {
       description: item.description || "",
       type: item.type,
       unit_capacity: item.unit_capacity ? String(item.unit_capacity) : "",
+      length_cm: item.length_cm != null ? String(item.length_cm) : "",
+      width_cm: item.width_cm != null ? String(item.width_cm) : "",
+      height_cm: item.height_cm != null ? String(item.height_cm) : "",
       photo_url: item.photo_url || "",
       location_id: item.location_id || boxHomeLocationId,
     });
@@ -1588,6 +1625,16 @@ export function SettingsPage() {
                     ),
                   },
                   {
+                    key: "length_cm",
+                    header: "Medidas",
+                    width: "w-36",
+                    render: (item) => (
+                      <span className="text-sm text-muted-foreground">
+                        {formatBoxOuterMeasures(item) || "—"}
+                      </span>
+                    ),
+                  },
+                  {
                     key: "status",
                     header: "Status",
                     width: "w-32",
@@ -1643,6 +1690,9 @@ export function SettingsPage() {
                           description: item.description || "",
                           type: item.type,
                           unit_capacity: item.unit_capacity ? String(item.unit_capacity) : "",
+                          length_cm: item.length_cm != null ? String(item.length_cm) : "",
+                          width_cm: item.width_cm != null ? String(item.width_cm) : "",
+                          height_cm: item.height_cm != null ? String(item.height_cm) : "",
                           photo_url: item.photo_url || "",
                           location_id: item.location_id || boxHomeLocationId,
                         });
@@ -2186,7 +2236,7 @@ export function SettingsPage() {
 
       {/* Asset Dialog */}
       <Dialog open={assetDialog.open} onOpenChange={(open) => setAssetDialog({ ...assetDialog, open })}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="text-lg">
               {assetDialog.mode === "create"
@@ -2309,6 +2359,55 @@ export function SettingsPage() {
                 <p className="text-xs text-muted-foreground">
                   Quantidade máxima de pops ou itens que esta embalagem comporta.
                 </p>
+              </div>
+            )}
+            {assetDialog.assetType === "box" && (
+              <div className="space-y-2">
+                <Label className="text-sm">Medidas externas (cm)</Label>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="boxLength" className="text-xs text-muted-foreground">Comprimento</Label>
+                    <Input
+                      id="boxLength"
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      inputMode="decimal"
+                      value={assetFormData.length_cm}
+                      onChange={(e) => setAssetFormData({ ...assetFormData, length_cm: e.target.value })}
+                      placeholder="cm"
+                      className="h-9"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="boxWidth" className="text-xs text-muted-foreground">Largura</Label>
+                    <Input
+                      id="boxWidth"
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      inputMode="decimal"
+                      value={assetFormData.width_cm}
+                      onChange={(e) => setAssetFormData({ ...assetFormData, width_cm: e.target.value })}
+                      placeholder="cm"
+                      className="h-9"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="boxHeight" className="text-xs text-muted-foreground">Altura</Label>
+                    <Input
+                      id="boxHeight"
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      inputMode="decimal"
+                      value={assetFormData.height_cm}
+                      onChange={(e) => setAssetFormData({ ...assetFormData, height_cm: e.target.value })}
+                      placeholder="cm"
+                      className="h-9"
+                    />
+                  </div>
+                </div>
               </div>
             )}
             {assetDialog.assetType === "box" && (

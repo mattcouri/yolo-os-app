@@ -27,6 +27,15 @@ export function getBoxUnitCapacity(asset: Pick<Asset, "type" | "unit_capacity">)
   return 0;
 }
 
+export function formatBoxOuterMeasures(
+  asset: Pick<Asset, "length_cm" | "width_cm" | "height_cm">
+) {
+  if (asset.length_cm == null && asset.width_cm == null && asset.height_cm == null) return "";
+  const part = (value: number | null | undefined) =>
+    value == null ? "—" : String(value).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+  return `${part(asset.length_cm)} × ${part(asset.width_cm)} × ${part(asset.height_cm)} cm`;
+}
+
 export function isOperationalAsset(asset: Pick<Asset, "type" | "category" | "code">) {
   return !isBoxAsset(asset) && !isUniformAsset(asset);
 }
