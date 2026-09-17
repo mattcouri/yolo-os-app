@@ -935,8 +935,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       (needsYardLocation(status) ? defaultYardLocation(status, get().locations)?.id || null : null);
     const newAsset: Asset = {
       id: generateId(),
-      location_id,
-      status,
       is_active: true,
       description: null,
       control_method: 'individual',
