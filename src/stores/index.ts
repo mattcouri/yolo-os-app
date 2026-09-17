@@ -1,13 +1,17 @@
 import { create } from 'zustand';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
-import { locationPurpose } from '@/lib/locations';
+import { locationPurpose, productStockLocations } from '@/lib/locations';
 import {
   ASSET_CLEAN_SYSTEM_KEY,
   ASSET_DIRTY_SYSTEM_KEY,
   ASSET_FACTORY_SYSTEM_KEY,
+  cleanLocation,
   factoryLocation,
   getBoxUnitCapacity,
+  isBoxAsset,
+  planAssetPlacement,
   suggestedAssetCode,
+  suggestedBoxCode,
 } from '@/lib/operational-assets';
 import {
   declaredQuantity,
@@ -19,7 +23,7 @@ import {
   varianceQuantity,
 } from '@/lib/receipt-progress';
 import { locationRequiresBox } from '@/lib/stock-placement';
-import { canSendToFactory } from '@/lib/packaging-board';
+import { BOX_TYPE_LABEL, TRANSIT_COLUMN, boxMatchesLocation, canRetireBox, canSendToFactory, isBoxType } from '@/lib/packaging-board';
 import { UNIFORM_STAY_OUT_NOTE, checkoutStaysOut } from '@/lib/kit-availability';
 import { checkoutMatchesItem } from '@/lib/ativos-na-rua';
 import {
@@ -106,6 +110,9 @@ interface AppState {
   createInventoryCount: (locationId: string) => Promise<InventoryCount>;
   
   updateStock: (id: string, data: Partial<Stock>) => Promise<void>;
+  adjustSkuQuantity: (productId: string, newQuantity: number) => Promise<void>;
+  adjustBoxTypeQuantity: (type: Asset['type'], newQuantity: number, locationId?: string | null) => Promise<void>;
+  moveBoxTypeLocation: (type: Asset['type'], fromLocationId: string | null, toLocationId: string | null) => Promise<void>;
   updateMaterialStock: (id: string, data: Partial<MaterialStock>) => Promise<void>;
   updateOrder: (id: string, data: Partial<Order>) => Promise<void>;
   updateOrderItem: (id: string, data: Partial<OrderItem>) => Promise<void>;
@@ -663,14 +670,50 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   deleteProduct: async (id) => {
+    const dropFromCatalog = (hardDeleted: boolean) => {
+      const now = new Date().toISOString();
+      set((state) => ({
+        products: hardDeleted
+          ? state.products.filter((p) => p.id !== id)
+          : state.products.map((p) =>
+              p.id === id ? { ...p, is_active: false, updated_at: now } : p
+            ),
+        productComponents: state.productComponents.filter(
+          (row) => row.parent_product_id !== id && row.child_product_id !== id
+        ),
+      }));
+    };
+
     if (isSupabaseConfigured && supabase) {
+      const { error: parentBomError } = await supabase
+        .from('product_components')
+        .delete()
+        .eq('parent_product_id', id);
+      if (parentBomError) throw new Error(parentBomError.message);
+
+      const { error: childBomError } = await supabase
+        .from('product_components')
+        .delete()
+        .eq('child_product_id', id);
+      if (childBomError) throw new Error(childBomError.message);
+
       const { error } = await supabase.from('products').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      if (!error) {
+        dropFromCatalog(true);
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const { error: deactivateError } = await supabase
+        .from('products')
+        .update({ is_active: false, updated_at: now })
+        .eq('id', id);
+      if (deactivateError) throw new Error(deactivateError.message);
+      dropFromCatalog(false);
+      return;
     }
 
-    set((state) => ({
-      products: state.products.filter((p) => p.id !== id),
-    }));
+    dropFromCatalog(true);
   },
 
   fetchProductComponents: async () => {
@@ -2757,6 +2800,463 @@ export const useAppStore = create<AppState>((set, get) => ({
     set(s => ({
       stock: s.stock.map(st => st.id === id ? { ...st, ...data, updated_at: now } : st)
     }));
+  },
+
+  adjustSkuQuantity: async (productId, newQuantity) => {
+    if (!Number.isFinite(newQuantity) || newQuantity < 0 || Math.round(newQuantity) !== newQuantity) {
+      throw new Error('Informe uma quantidade inteira maior ou igual a zero.');
+    }
+    const product = get().products.find((item) => item.id === productId);
+    if (!product || product.kind !== 'pop') throw new Error('SKU não encontrado.');
+
+    const isLive = (item: Stock) =>
+      item.product_id === productId && item.status !== 'depleted' && item.quantity > 0;
+    const current = get().stock.filter(isLive).reduce((sum, item) => sum + item.quantity, 0);
+    const target = Math.round(newQuantity);
+    const delta = target - current;
+    if (delta === 0) return;
+
+    const now = new Date().toISOString();
+    rememberCodes(get().stock.map((row) => row.stock_number));
+    rememberCodes(get().movements.map((row) => row.movement_number));
+    let nextStock = [...get().stock];
+    let nextAssets = [...get().assets];
+    const newStock: Stock[] = [];
+    const newMovements: Movement[] = [];
+    const touchedStock = new Set<string>();
+    const touchedAssets = new Set<string>();
+
+    const pushMovement = (movement: Omit<Movement, 'id' | 'movement_number' | 'created_at' | 'created_by'>) => {
+      newMovements.push({
+        id: generateId(),
+        movement_number: generateMovementNumber(),
+        created_by: null,
+        created_at: now,
+        ...movement,
+      });
+    };
+
+    const applyRow = (row: Stock, after: number) => {
+      const depleted = after <= 0;
+      nextStock = nextStock.map((item) =>
+        item.id === row.id
+          ? {
+              ...item,
+              quantity: Math.max(0, after),
+              status: depleted ? 'depleted' : item.status === 'depleted' ? 'available' : item.status,
+              is_active_separation: depleted ? false : item.is_active_separation,
+              updated_at: now,
+            }
+          : item
+      );
+      touchedStock.add(row.id);
+      if (depleted && row.asset_id) {
+        nextAssets = nextAssets.map((asset) =>
+          asset.id === row.asset_id
+            ? { ...asset, status: 'available', last_moved_at: now, updated_at: now }
+            : asset
+        );
+        touchedAssets.add(row.asset_id);
+      }
+      pushMovement({
+        type: 'adjustment',
+        stock_id: row.id,
+        asset_id: row.asset_id,
+        order_id: null,
+        inspection_id: null,
+        inventory_count_id: null,
+        from_location_id: row.location_id,
+        to_location_id: row.location_id,
+        quantity: Math.abs(after - row.quantity),
+        quantity_before: row.quantity,
+        quantity_after: Math.max(0, after),
+        reason: 'Ajuste administrativo',
+        notes: product.code,
+      });
+    };
+
+    if (delta > 0) {
+      const loose = nextStock.find((item) => isLive(item) && !item.asset_id);
+      if (loose) {
+        applyRow(loose, loose.quantity + delta);
+      } else {
+        let locationId = nextStock.find((item) => item.product_id === productId)?.location_id || null;
+        if (product.is_composite) {
+          locationId = (await get().ensureAssembledLocation()).id;
+        } else if (!locationId) {
+          locationId = productStockLocations(get().locations, true)[0]?.id || null;
+        }
+        if (!locationId) throw new Error('Cadastre um local de estoque de SKUs.');
+        const sample = nextStock.find((item) => item.product_id === productId && item.quantity > 0);
+        const created: Stock = {
+          id: generateId(),
+          stock_number: generateStockNumber(product.is_composite ? 'CMP' : 'SOL'),
+          product_id: productId,
+          asset_id: null,
+          quantity: delta,
+          location_id: locationId,
+          grade: sample?.grade && sample.grade !== 'pending' ? sample.grade : 'AAA',
+          physical_state: sample?.physical_state === 'frozen' ? 'frozen' : 'liquid',
+          status: 'available',
+          is_active_separation: false,
+          lot: null,
+          fifo_date: now.slice(0, 10),
+          received_date: now.slice(0, 10),
+          packed_at: now,
+          receipt_id: null,
+          inspection_id: null,
+          fill_id: null,
+          created_at: now,
+          updated_at: now,
+        };
+        newStock.push(created);
+        nextStock = [...nextStock, created];
+        pushMovement({
+          type: 'adjustment',
+          stock_id: created.id,
+          asset_id: null,
+          order_id: null,
+          inspection_id: null,
+          inventory_count_id: null,
+          from_location_id: locationId,
+          to_location_id: locationId,
+          quantity: delta,
+          quantity_before: 0,
+          quantity_after: delta,
+          reason: 'Ajuste administrativo',
+          notes: product.code,
+        });
+      }
+    } else {
+      let remaining = -delta;
+      const ordered = [
+        ...nextStock
+          .filter((item) => isLive(item) && !item.asset_id)
+          .sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")),
+        ...nextStock
+          .filter((item) => isLive(item) && item.asset_id)
+          .sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "")),
+      ];
+      for (const row of ordered) {
+        if (remaining <= 0) break;
+        const take = Math.min(row.quantity, remaining);
+        applyRow(row, row.quantity - take);
+        remaining -= take;
+      }
+      if (remaining > 0) throw new Error('Não foi possível aplicar o ajuste neste SKU.');
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      if (newStock.length) {
+        const { error } = await supabase.from('stock').insert(newStock);
+        if (error) throw new Error(error.message);
+      }
+      for (const id of touchedStock) {
+        const row = nextStock.find((item) => item.id === id);
+        if (!row) continue;
+        const { error } = await supabase
+          .from('stock')
+          .update({
+            quantity: row.quantity,
+            status: row.status,
+            is_active_separation: row.is_active_separation,
+            updated_at: now,
+          })
+          .eq('id', id);
+        if (error) throw new Error(error.message);
+      }
+      for (const id of touchedAssets) {
+        const asset = nextAssets.find((item) => item.id === id);
+        if (!asset) continue;
+        const { error } = await supabase
+          .from('assets')
+          .update({ status: asset.status, last_moved_at: asset.last_moved_at, updated_at: now })
+          .eq('id', id);
+        if (error) throw new Error(error.message);
+      }
+      if (newMovements.length) {
+        const { error } = await supabase.from('movements').insert(newMovements);
+        if (error) throw new Error(error.message);
+      }
+    }
+
+    set({
+      stock: nextStock,
+      assets: nextAssets,
+      movements: [...newMovements, ...get().movements],
+    });
+  },
+
+  adjustBoxTypeQuantity: async (type, newQuantity, locationId) => {
+    if (!isBoxType(type)) throw new Error('Tipo de embalagem inválido.');
+    if (!Number.isFinite(newQuantity) || newQuantity < 0 || Math.round(newQuantity) !== newQuantity) {
+      throw new Error('Informe uma quantidade inteira maior ou igual a zero.');
+    }
+    const target = Math.round(newQuantity);
+    const locations = get().locations;
+    const destId = locationId === undefined ? cleanLocation(locations)?.id || null : locationId || null;
+    const active = get().assets.filter(
+      (asset) =>
+        isBoxAsset(asset) &&
+        asset.is_active &&
+        asset.type === type &&
+        (locationId === undefined || boxMatchesLocation(asset, destId, locations))
+    );
+    const delta = target - active.length;
+    if (delta === 0) return;
+
+    const now = new Date().toISOString();
+    rememberCodes(get().movements.map((row) => row.movement_number));
+    let nextAssets = [...get().assets];
+    const newAssets: Asset[] = [];
+    const newMovements: Movement[] = [];
+    const retiredIds = new Set<string>();
+
+    const pushMovement = (movement: Omit<Movement, 'id' | 'movement_number' | 'created_at' | 'created_by'>) => {
+      newMovements.push({
+        id: generateId(),
+        movement_number: generateMovementNumber(),
+        created_by: null,
+        created_at: now,
+        ...movement,
+      });
+    };
+
+    if (delta > 0) {
+      if (locationId === TRANSIT_COLUMN) {
+        throw new Error('Escolha um local cadastrado. Em trânsito não recebe caixas novas.');
+      }
+      const sample = active[0] || nextAssets.find((asset) => asset.type === type);
+      const planned = planAssetPlacement(
+        { status: 'available', location_id: null },
+        { locationId: destId },
+        locations,
+        false
+      );
+      const unitCapacity =
+        sample?.unit_capacity && sample.unit_capacity > 0
+          ? sample.unit_capacity
+          : type === 'caixa_media'
+            ? 100
+            : null;
+      const codes = nextAssets.map((asset) => asset.code);
+      for (let i = 0; i < delta; i += 1) {
+        const code = suggestedBoxCode(codes);
+        codes.push(code);
+        const created: Asset = {
+          id: generateId(),
+          code,
+          name: `${BOX_TYPE_LABEL[type]} ${code}`,
+          description: null,
+          type,
+          location_id: planned.location_id,
+          status: planned.status,
+          is_active: true,
+          control_method: 'individual',
+          quantity_on_hand: 1,
+          unit_capacity: unitCapacity,
+          custom_fields: {},
+          created_at: now,
+          updated_at: now,
+        };
+        newAssets.push(created);
+        nextAssets = [...nextAssets, created];
+        pushMovement({
+          type: 'adjustment',
+          stock_id: null,
+          asset_id: created.id,
+          order_id: null,
+          inspection_id: null,
+          inventory_count_id: null,
+          from_location_id: null,
+          to_location_id: planned.location_id,
+          quantity: 1,
+          quantity_before: 0,
+          quantity_after: 1,
+          reason: 'Ajuste administrativo',
+          notes: code,
+        });
+      }
+    } else {
+      const removable = active
+        .filter((asset) => canRetireBox(asset, get().stock))
+        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      if (removable.length < -delta) {
+        const min = active.length - removable.length;
+        throw new Error(
+          `Só é possível reduzir para ${min}. ${-delta - removable.length} caixa(s) estão cheias, em uso ou na fábrica.`
+        );
+      }
+      for (const asset of removable.slice(0, -delta)) {
+        retiredIds.add(asset.id);
+        nextAssets = nextAssets.map((item) =>
+          item.id === asset.id
+            ? { ...item, is_active: false, last_moved_at: now, updated_at: now }
+            : item
+        );
+        pushMovement({
+          type: 'adjustment',
+          stock_id: null,
+          asset_id: asset.id,
+          order_id: null,
+          inspection_id: null,
+          inventory_count_id: null,
+          from_location_id: asset.location_id,
+          to_location_id: asset.location_id,
+          quantity: 1,
+          quantity_before: 1,
+          quantity_after: 0,
+          reason: 'Ajuste administrativo',
+          notes: asset.code,
+        });
+      }
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      if (newAssets.length) {
+        const { error } = await supabase.from('assets').insert(newAssets);
+        if (error) throw new Error(error.message);
+      }
+      for (const id of retiredIds) {
+        const { error } = await supabase
+          .from('assets')
+          .update({ is_active: false, last_moved_at: now, updated_at: now })
+          .eq('id', id);
+        if (error) throw new Error(error.message);
+      }
+      if (newMovements.length) {
+        const { error } = await supabase.from('movements').insert(newMovements);
+        if (error) throw new Error(error.message);
+      }
+    }
+
+    set({
+      assets: nextAssets,
+      movements: [...newMovements, ...get().movements],
+    });
+  },
+
+  moveBoxTypeLocation: async (type, fromLocationId, toLocationId) => {
+    if (!isBoxType(type)) throw new Error('Tipo de embalagem inválido.');
+    const fromKey = fromLocationId || '';
+    const toKey = toLocationId || '';
+    if (fromKey === toKey) return;
+    if (toKey === TRANSIT_COLUMN) throw new Error('Escolha um local cadastrado.');
+
+    const locations = get().locations;
+    const factory = factoryLocation(locations);
+    const destId = toKey || null;
+    const group = get().assets.filter(
+      (asset) =>
+        isBoxAsset(asset) &&
+        asset.is_active &&
+        asset.type === type &&
+        boxMatchesLocation(asset, fromKey || null, locations)
+    );
+    if (group.length === 0) return;
+
+    const now = new Date().toISOString();
+    rememberCodes(get().movements.map((row) => row.movement_number));
+    let nextAssets = [...get().assets];
+    let nextStock = [...get().stock];
+    const newMovements: Movement[] = [];
+    const touchedAssets = new Set<string>();
+    const touchedStock = new Set<string>();
+
+    for (const asset of group) {
+      const hasProduct = nextStock.some(
+        (item) => item.asset_id === asset.id && item.quantity > 0 && item.status !== 'depleted'
+      );
+      if (factory && destId === factory.id) {
+        if (hasProduct || !canSendToFactory(asset, nextStock)) {
+          throw new Error(
+            `${asset.code} não pode ir à fábrica. Só caixa preta ou grande, vazia, após limpeza.`
+          );
+        }
+      }
+      const planned = planAssetPlacement(asset, { locationId: destId }, locations, false);
+      if (planned.error) throw new Error(planned.error);
+      let status = planned.status;
+      if (!(factory && destId === factory.id) && status === 'at_factory') {
+        status = hasProduct ? 'with_product' : 'available';
+      }
+      if (hasProduct && (status === 'available' || status === 'empty_ready_return')) {
+        status = 'with_product';
+      }
+      if (hasProduct && (status === 'cleaning' || status === 'at_factory')) {
+        throw new Error(`${asset.code} está cheia e não pode ir para ${status === 'cleaning' ? 'área suja' : 'fábrica'}.`);
+      }
+
+      nextAssets = nextAssets.map((item) =>
+        item.id === asset.id
+          ? { ...item, location_id: planned.location_id, status, last_moved_at: now, updated_at: now }
+          : item
+      );
+      touchedAssets.add(asset.id);
+      for (const stock of nextStock.filter(
+        (item) => item.asset_id === asset.id && item.quantity > 0 && item.status !== 'depleted'
+      )) {
+        nextStock = nextStock.map((item) =>
+          item.id === stock.id ? { ...item, location_id: planned.location_id || item.location_id, updated_at: now } : item
+        );
+        touchedStock.add(stock.id);
+      }
+      newMovements.push({
+        id: generateId(),
+        movement_number: generateMovementNumber(),
+        type: 'transfer',
+        stock_id: null,
+        asset_id: asset.id,
+        order_id: null,
+        inspection_id: null,
+        inventory_count_id: null,
+        from_location_id: asset.location_id,
+        to_location_id: planned.location_id,
+        quantity: 1,
+        quantity_before: 1,
+        quantity_after: 1,
+        reason: 'Ajuste administrativo',
+        notes: asset.code,
+        created_by: null,
+        created_at: now,
+      });
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      for (const id of touchedAssets) {
+        const asset = nextAssets.find((item) => item.id === id);
+        if (!asset) continue;
+        const { error } = await supabase
+          .from('assets')
+          .update({
+            location_id: asset.location_id,
+            status: asset.status,
+            last_moved_at: now,
+            updated_at: now,
+          })
+          .eq('id', id);
+        if (error) throw new Error(error.message);
+      }
+      for (const id of touchedStock) {
+        const stock = nextStock.find((item) => item.id === id);
+        if (!stock) continue;
+        const { error } = await supabase
+          .from('stock')
+          .update({ location_id: stock.location_id, updated_at: now })
+          .eq('id', id);
+        if (error) throw new Error(error.message);
+      }
+      if (newMovements.length) {
+        const { error } = await supabase.from('movements').insert(newMovements);
+        if (error) throw new Error(error.message);
+      }
+    }
+
+    set({
+      assets: nextAssets,
+      stock: nextStock,
+      movements: [...newMovements, ...get().movements],
+    });
   },
   
   updateMaterialStock: async (id, data) => {

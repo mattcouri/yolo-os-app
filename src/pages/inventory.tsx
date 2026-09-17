@@ -7,8 +7,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataTable } from "@/components/ui/data-table";
+import { useAuthProfile } from "@/lib/auth";
 import { useAppStore } from "@/stores";
-import { assembledLocation, isAssemblyBox, stockLeafUnits } from "@/lib/assembly";
+import { assembledLocation, isAssemblyBox, leafUnits, stockLeafUnits } from "@/lib/assembly";
 import { productStockLocations } from "@/lib/locations";
 import type { Asset, Location, MaterialStock, Product, ProductComponent, Stock } from "@/types/database";
 
@@ -231,6 +232,229 @@ function GradeChips({ grades, kind }: { grades: Record<GradeKey, number>; kind: 
 function qtyCell(value: number) {
   if (value <= 0) return <span className="text-muted-foreground">—</span>;
   return value.toLocaleString("pt-BR");
+}
+
+type SkuTotalRow = {
+  id: string;
+  sku: string;
+  name: string;
+  kind: "Individual" | "Composto";
+  isComposite: boolean;
+  quantity: number;
+  pops: number;
+  liquid: number;
+  frozen: number;
+  locations: string;
+  search: string;
+};
+
+function liveSkuStock(item: Stock) {
+  return item.quantity > 0 && item.status !== "depleted";
+}
+
+function buildSkuTotals(
+  products: Product[],
+  locations: Location[],
+  stock: Stock[],
+  components: ProductComponent[]
+): SkuTotalRow[] {
+  const locationName = (id: string) => locations.find((row) => row.id === id)?.name || "—";
+  return products
+    .filter((product) => product.kind === "pop")
+    .filter((product) => product.is_active || stock.some((item) => item.product_id === product.id && liveSkuStock(item)))
+    .map((product) => {
+      const rows = stock.filter((item) => item.product_id === product.id && liveSkuStock(item));
+      const quantity = rows.reduce((sum, item) => sum + item.quantity, 0);
+      const liquid = rows
+        .filter((item) => item.physical_state !== "frozen")
+        .reduce((sum, item) => sum + item.quantity, 0);
+      const frozen = rows
+        .filter((item) => item.physical_state === "frozen")
+        .reduce((sum, item) => sum + item.quantity, 0);
+      const pops = quantity * leafUnits(product.id, products, components);
+      const locNames = [...new Set(rows.map((item) => locationName(item.location_id)))].join(", ");
+      const kind: SkuTotalRow["kind"] = product.is_composite ? "Composto" : "Individual";
+      const name = product.flavor || product.name;
+      return {
+        id: product.id,
+        sku: product.code,
+        name,
+        kind,
+        isComposite: product.is_composite,
+        quantity,
+        pops,
+        liquid,
+        frozen,
+        locations: locNames || "—",
+        search: `${product.code} ${name} ${kind} ${locNames}`.toLowerCase(),
+      };
+    })
+    .sort(
+      (a, b) =>
+        Number(a.isComposite) - Number(b.isComposite) || a.sku.localeCompare(b.sku, "pt-BR")
+    );
+}
+
+function SkuQuantityCell({
+  row,
+  canEdit,
+  draft,
+  onDraft,
+  saving,
+  onSave,
+}: {
+  row: SkuTotalRow;
+  canEdit: boolean;
+  draft: string;
+  onDraft: (value: string) => void;
+  saving: boolean;
+  onSave: () => void;
+}) {
+  if (!canEdit) return <span>{row.quantity.toLocaleString("pt-BR")}</span>;
+  const dirty = draft !== String(row.quantity);
+  return (
+    <div className="flex items-center justify-end gap-1">
+      <Input
+        type="number"
+        min={0}
+        step={1}
+        className="h-7 w-[5.5rem] text-right text-xs"
+        value={draft}
+        disabled={saving}
+        onChange={(event) => onDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && dirty) onSave();
+        }}
+      />
+      <Button
+        type="button"
+        variant={dirty ? "default" : "ghost"}
+        size="sm"
+        className="h-7 px-2 text-xs"
+        disabled={!dirty || saving}
+        onClick={onSave}
+      >
+        {saving ? "…" : "Salvar"}
+      </Button>
+    </div>
+  );
+}
+
+function SkuTotalsTable() {
+  const { products, locations, stock, productComponents, adjustSkuQuantity } = useAppStore();
+  const { isAdmin } = useAuthProfile();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const rows = useMemo(
+    () => buildSkuTotals(products, locations, stock, productComponents),
+    [products, locations, stock, productComponents]
+  );
+
+  const save = async (row: SkuTotalRow) => {
+    const raw = drafts[row.id] ?? String(row.quantity);
+    const next = Number(raw);
+    if (!Number.isFinite(next) || next < 0 || Math.round(next) !== next) {
+      setError("Informe uma quantidade inteira maior ou igual a zero.");
+      return;
+    }
+    setSavingId(row.id);
+    setError(null);
+    try {
+      await adjustSkuQuantity(row.id, next);
+      setDrafts((current) => {
+        const { [row.id]: _ignored, ...rest } = current;
+        return rest;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível ajustar a quantidade.");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Todos os SKUs</CardTitle>
+            <CardDescription>
+              Individuais e compostos, com o saldo atual. {isAdmin ? "Admin pode ajustar a quantidade; o sistema grava um movimento de ajuste." : "Somente admin altera quantidade."}
+            </CardDescription>
+          </div>
+          <Badge variant="secondary">{rows.length}</Badge>
+        </div>
+        {error ? <p className="pt-2 text-sm text-destructive">{error}</p> : null}
+      </CardHeader>
+      <CardContent className="pt-0">
+        <DataTable
+          data={rows}
+          searchKey="search"
+          searchPlaceholder="Buscar SKU, sabor ou tipo…"
+          emptyMessage="Nenhum SKU cadastrado."
+          maxHeight="calc(100vh - 280px)"
+          columns={[
+            {
+              key: "sku",
+              header: "SKU",
+              width: "w-28",
+              sortable: true,
+              render: (row) => <span className="font-mono text-xs">{row.sku}</span>,
+            },
+            { key: "name", header: "Produto", sortable: true },
+            {
+              key: "kind",
+              header: "Tipo",
+              width: "w-28",
+              sortable: true,
+              render: (row) => <Badge variant={row.isComposite ? "secondary" : "outline"}>{row.kind}</Badge>,
+            },
+            {
+              key: "quantity",
+              header: "Qtd",
+              width: isAdmin ? "w-44" : "w-20",
+              sortable: true,
+              render: (row) => (
+                <SkuQuantityCell
+                  row={row}
+                  canEdit={isAdmin}
+                  draft={drafts[row.id] ?? String(row.quantity)}
+                  onDraft={(value) => setDrafts((current) => ({ ...current, [row.id]: value }))}
+                  saving={savingId === row.id}
+                  onSave={() => void save(row)}
+                />
+              ),
+            },
+            {
+              key: "pops",
+              header: "Pops",
+              width: "w-20",
+              sortable: true,
+              render: (row) => qtyCell(row.pops),
+            },
+            {
+              key: "liquid",
+              header: "Estado",
+              width: "w-28",
+              render: (row) => (row.quantity > 0 ? stateLabel(row.liquid, row.frozen) : "—"),
+            },
+            {
+              key: "locations",
+              header: "Locais",
+              sortable: true,
+              render: (row) => (
+                <span className="truncate text-xs text-muted-foreground" title={row.locations}>
+                  {row.locations}
+                </span>
+              ),
+            },
+          ]}
+        />
+      </CardContent>
+    </Card>
+  );
 }
 
 function InventoryKanban({
@@ -634,6 +858,8 @@ export function InventoryPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      <SkuTotalsTable />
     </div>
   );
 }

@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/ui/data-table";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAuthProfile } from "@/lib/auth";
 import {
   BOX_TYPE_LABEL,
   BOX_TYPES,
@@ -129,6 +131,266 @@ function kanbanColumns(locations: Location[], rows: BoxRow[]) {
     .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "pt-BR"))
     .map((location) => location.id);
   return [factoryCol, ...place, ...extras];
+}
+
+type BoxTotalRow = {
+  id: string;
+  type: BoxType;
+  typeLabel: string;
+  locationId: string;
+  locationName: string;
+  quantity: number;
+  full: number;
+  empty: number;
+  search: string;
+};
+
+function packagingPlaceOptions(locations: Location[]) {
+  const factory = factoryLocation(locations);
+  return [
+    ...(factory ? [factory] : []),
+    ...locations
+      .filter((location) => location.is_active && location.id !== factory?.id)
+      .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "pt-BR")),
+  ];
+}
+
+function buildBoxTotals(rows: BoxRow[], locations: Location[]): BoxTotalRow[] {
+  return BOX_TYPES.flatMap((type) => {
+    const group = rows.filter((row) => row.type === type);
+    if (group.length === 0) {
+      return [
+        {
+          id: `${type}:`,
+          type,
+          typeLabel: BOX_TYPE_LABEL[type],
+          locationId: "",
+          locationName: "Sem local",
+          quantity: 0,
+          full: 0,
+          empty: 0,
+          search: `${BOX_TYPE_LABEL[type]} ${type}`.toLowerCase(),
+        },
+      ];
+    }
+    const byLocation = new Map<string, BoxRow[]>();
+    for (const row of group) {
+      const key = row.columnId === UNLOCATED_COLUMN ? "" : row.columnId;
+      const list = byLocation.get(key) || [];
+      list.push(row);
+      byLocation.set(key, list);
+    }
+    return [...byLocation.entries()]
+      .map(([key, items]) => {
+        const locationId = key === FACTORY_COLUMN ? factoryLocation(locations)?.id || FACTORY_COLUMN : key;
+        const locationName = key ? columnLabel(key, locations) : "Sem local";
+        const full = items.filter((item) => item.full).length;
+        return {
+          id: `${type}:${key}`,
+          type,
+          typeLabel: BOX_TYPE_LABEL[type],
+          locationId,
+          locationName,
+          quantity: items.length,
+          full,
+          empty: items.length - full,
+          search: `${BOX_TYPE_LABEL[type]} ${type} ${locationName}`.toLowerCase(),
+        };
+      })
+      .sort((a, b) => a.locationName.localeCompare(b.locationName, "pt-BR"));
+  });
+}
+
+function BoxQuantityCell({
+  row,
+  canEdit,
+  draft,
+  onDraft,
+  saving,
+  onSave,
+}: {
+  row: BoxTotalRow;
+  canEdit: boolean;
+  draft: string;
+  onDraft: (value: string) => void;
+  saving: boolean;
+  onSave: () => void;
+}) {
+  if (!canEdit) return <span>{row.quantity.toLocaleString("pt-BR")}</span>;
+  const dirty = draft !== String(row.quantity);
+  return (
+    <div className="flex items-center justify-end gap-1">
+      <Input
+        type="number"
+        min={0}
+        step={1}
+        className="h-7 w-[5.5rem] text-right text-xs"
+        value={draft}
+        disabled={saving}
+        onChange={(event) => onDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && dirty) onSave();
+        }}
+      />
+      <Button
+        type="button"
+        variant={dirty ? "default" : "ghost"}
+        size="sm"
+        className="h-7 px-2 text-xs"
+        disabled={!dirty || saving}
+        onClick={onSave}
+      >
+        {saving ? "…" : "Salvar"}
+      </Button>
+    </div>
+  );
+}
+
+function BoxTotalsTable({ rows, locations }: { rows: BoxRow[]; locations: Location[] }) {
+  const { adjustBoxTypeQuantity, moveBoxTypeLocation } = useAppStore();
+  const { isAdmin } = useAuthProfile();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [locationDrafts, setLocationDrafts] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const totals = useMemo(() => buildBoxTotals(rows, locations), [rows, locations]);
+  const placeOptions = useMemo(() => packagingPlaceOptions(locations), [locations]);
+  const selectClass = "h-8 w-full max-w-[14rem] rounded-md border border-input bg-background px-2 text-xs";
+
+  const save = async (row: BoxTotalRow) => {
+    const raw = drafts[row.id] ?? String(row.quantity);
+    const next = Number(raw);
+    if (!Number.isFinite(next) || next < 0 || Math.round(next) !== next) {
+      setError("Informe uma quantidade inteira maior ou igual a zero.");
+      return;
+    }
+    const locationId = locationDrafts[row.id] ?? row.locationId;
+    setSavingId(row.id);
+    setError(null);
+    try {
+      await adjustBoxTypeQuantity(row.type, next, locationId || null);
+      setDrafts((current) => {
+        const { [row.id]: _ignored, ...rest } = current;
+        return rest;
+      });
+      setLocationDrafts((current) => {
+        const { [row.id]: _ignored, ...rest } = current;
+        return rest;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível ajustar a quantidade.");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const move = async (row: BoxTotalRow, nextLocationId: string) => {
+    if (row.quantity === 0) {
+      setLocationDrafts((current) => ({ ...current, [row.id]: nextLocationId }));
+      return;
+    }
+    if (nextLocationId === row.locationId) return;
+    setSavingId(row.id);
+    setError(null);
+    try {
+      await moveBoxTypeLocation(row.type, row.locationId || null, nextLocationId || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível alterar o local.");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Todas as embalagens</CardTitle>
+            <CardDescription>
+              Quantidade por tipo e local. {isAdmin ? "Admin pode ajustar a quantidade e mudar o local do grupo. Caixas cheias levam o produto junto." : "Somente admin altera quantidade e local."}
+            </CardDescription>
+          </div>
+          <Badge variant="secondary">{totals.reduce((sum, row) => sum + row.quantity, 0)}</Badge>
+        </div>
+        {error ? <p className="pt-2 text-sm text-destructive">{error}</p> : null}
+      </CardHeader>
+      <CardContent className="pt-0">
+        <DataTable
+          data={totals}
+          searchKey="search"
+          searchPlaceholder="Buscar tipo ou local…"
+          emptyMessage="Nenhuma embalagem cadastrada."
+          maxHeight="320px"
+          columns={[
+            {
+              key: "typeLabel",
+              header: "Tipo",
+              sortable: true,
+              render: (row) => <span className="font-medium">{row.typeLabel}</span>,
+            },
+            {
+              key: "locationName",
+              header: "Local",
+              width: "w-56",
+              sortable: true,
+              render: (row) => {
+                const value = locationDrafts[row.id] ?? row.locationId;
+                if (!isAdmin) return <span className="text-xs">{row.locationName}</span>;
+                return (
+                  <select
+                    className={selectClass}
+                    value={value}
+                    disabled={savingId === row.id}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => void move(row, event.target.value)}
+                  >
+                    <option value="">Sem local</option>
+                    {value === TRANSIT_COLUMN ? <option value={TRANSIT_COLUMN}>Em trânsito</option> : null}
+                    {placeOptions.map((location) => (
+                      <option key={location.id} value={location.id}>
+                        {location.name}
+                      </option>
+                    ))}
+                  </select>
+                );
+              },
+            },
+            {
+              key: "quantity",
+              header: "Qtd",
+              width: isAdmin ? "w-44" : "w-20",
+              sortable: true,
+              render: (row) => (
+                <BoxQuantityCell
+                  row={row}
+                  canEdit={isAdmin}
+                  draft={drafts[row.id] ?? String(row.quantity)}
+                  onDraft={(value) => setDrafts((current) => ({ ...current, [row.id]: value }))}
+                  saving={savingId === row.id}
+                  onSave={() => void save(row)}
+                />
+              ),
+            },
+            {
+              key: "full",
+              header: "Cheias",
+              width: "w-20",
+              sortable: true,
+              render: (row) => (row.full ? row.full.toLocaleString("pt-BR") : <span className="text-muted-foreground">—</span>),
+            },
+            {
+              key: "empty",
+              header: "Vazias",
+              width: "w-20",
+              sortable: true,
+              render: (row) => (row.empty ? row.empty.toLocaleString("pt-BR") : <span className="text-muted-foreground">—</span>),
+            },
+          ]}
+        />
+      </CardContent>
+    </Card>
+  );
 }
 
 export function PackagingPage() {
@@ -280,6 +542,8 @@ export function PackagingPage() {
           />
         </TabsContent>
       </Tabs>
+
+      <BoxTotalsTable rows={rows} locations={locations} />
     </div>
   );
 }

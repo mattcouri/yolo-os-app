@@ -186,6 +186,16 @@ export function suggestedAssetCode(category: string, existingCodes: string[]) {
   return `${prefix}-${String(max + 1).padStart(3, "0")}`;
 }
 
+export function suggestedBoxCode(existingCodes: string[]) {
+  let max = 0;
+  const re = /^CX-(\d+)$/i;
+  existingCodes.forEach((code) => {
+    const match = code.match(re);
+    if (match) max = Math.max(max, Number(match[1]));
+  });
+  return `CX-${String(max + 1).padStart(3, "0")}`;
+}
+
 export function monthsBetween(from: string, to = new Date()) {
   const start = new Date(from);
   if (Number.isNaN(start.getTime())) return null;

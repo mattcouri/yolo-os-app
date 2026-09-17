@@ -39,6 +39,17 @@ export function isFactoryColumn(columnId: string, locations: Location[]) {
   return columnId === FACTORY_COLUMN || (Boolean(factory) && columnId === factory?.id);
 }
 
+export function boxLocationKey(asset: Asset, locations: Location[] = []) {
+  const column = boxColumnId(asset, locations);
+  if (column === UNLOCATED_COLUMN) return "";
+  if (isFactoryColumn(column, locations)) return factoryLocation(locations)?.id || FACTORY_COLUMN;
+  return column;
+}
+
+export function boxMatchesLocation(asset: Asset, locationId: string | null, locations: Location[]) {
+  return boxLocationKey(asset, locations) === (locationId || "");
+}
+
 export function daysAging(iso?: string | null) {
   if (!iso) return null;
   const then = new Date(iso).getTime();
@@ -94,6 +105,23 @@ export function canSendToFactory(asset: Asset, stock: Stock[]) {
   if (!asset.is_active) return false;
   if (asset.type !== "caixa_preta" && asset.type !== "caixa_grande") return false;
   if (FACTORY_BLOCKED_STATUS.has(asset.status)) return false;
+  return !stock.some((item) => item.asset_id === asset.id && item.quantity > 0 && item.status !== "depleted");
+}
+
+const RETIRE_BLOCKED_STATUS = new Set<Asset["status"]>([
+  "with_product",
+  "in_use",
+  "reserved",
+  "in_transit",
+  "at_factory",
+  "lost",
+  "written_off",
+  "damaged",
+]);
+
+export function canRetireBox(asset: Asset, stock: Stock[]) {
+  if (!isBoxAsset(asset) || !asset.is_active) return false;
+  if (RETIRE_BLOCKED_STATUS.has(asset.status)) return false;
   return !stock.some((item) => item.asset_id === asset.id && item.quantity > 0 && item.status !== "depleted");
 }
 

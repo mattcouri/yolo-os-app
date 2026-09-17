@@ -363,6 +363,8 @@ export function SettingsPage() {
     type: "location" | "product" | "asset";
     item?: Location | Product | Asset;
   }>({ open: false, type: "location" });
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const [formData, setFormData] = useState<{
     name: string;
@@ -780,22 +782,28 @@ export function SettingsPage() {
 
   const handleDelete = async () => {
     const { deleteLocation, deleteProduct, deleteAsset } = useAppStore.getState();
-    
-    if (deleteDialog.type === "location" && deleteDialog.item) {
-      await deleteLocation(deleteDialog.item.id);
-    } else if (deleteDialog.type === "product" && deleteDialog.item) {
-      await deleteProduct(deleteDialog.item.id);
-    } else if (deleteDialog.type === "asset" && deleteDialog.item) {
-      await deleteAsset(deleteDialog.item.id);
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      if (deleteDialog.type === "location" && deleteDialog.item) {
+        await deleteLocation(deleteDialog.item.id);
+      } else if (deleteDialog.type === "product" && deleteDialog.item) {
+        await deleteProduct(deleteDialog.item.id);
+      } else if (deleteDialog.type === "asset" && deleteDialog.item) {
+        await deleteAsset(deleteDialog.item.id);
+      }
+      setDeleteDialog({ open: false, type: "location" });
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Não foi possível excluir.");
+    } finally {
+      setDeleteBusy(false);
     }
-    
-    setDeleteDialog({ open: false, type: "location" });
   };
 
-  const popProducts = products.filter((p) => p.kind === "pop");
+  const popProducts = products.filter((p) => p.kind === "pop" && p.is_active);
   const simpleProducts = popProducts.filter((p) => !p.is_composite);
   const compositeProducts = popProducts.filter((p) => p.is_composite);
-  const materialProducts = products.filter((p) => p.kind === "material");
+  const materialProducts = products.filter((p) => p.kind === "material" && p.is_active);
   const boxAssets = assets.filter(isBoxAsset);
   const equipmentAssets = assets.filter((a) => !isBoxAsset(a));
 
@@ -2318,7 +2326,14 @@ export function SettingsPage() {
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={deleteDialog.open} onOpenChange={(open) => setDeleteDialog({ ...deleteDialog, open })}>
+      <Dialog
+        open={deleteDialog.open}
+        onOpenChange={(open) => {
+          if (deleteBusy) return;
+          setDeleteDialog({ ...deleteDialog, open });
+          if (!open) setDeleteError(null);
+        }}
+      >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-lg">Confirmar exclusão</DialogTitle>
@@ -2330,13 +2345,22 @@ export function SettingsPage() {
               ? Esta ação não pode ser desfeita.
             </DialogDescription>
           </DialogHeader>
+          {deleteError && (
+            <p className="text-sm text-destructive">{deleteError}</p>
+          )}
           <DialogFooter className="gap-2 sm:gap-0">
-            <Button type="button" variant="outline" onClick={() => setDeleteDialog({ open: false, type: "location" })} className="h-9">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={deleteBusy}
+              onClick={() => setDeleteDialog({ open: false, type: "location" })}
+              className="h-9"
+            >
               Cancelar
             </Button>
-            <Button type="button" variant="destructive" onClick={handleDelete} className="h-9">
+            <Button type="button" variant="destructive" onClick={handleDelete} disabled={deleteBusy} className="h-9">
               <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-              Excluir
+              {deleteBusy ? "Excluindo…" : "Excluir"}
             </Button>
           </DialogFooter>
         </DialogContent>
