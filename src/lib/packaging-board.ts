@@ -1,4 +1,4 @@
-import { factoryLocation } from "@/lib/operational-assets";
+import { factoryLocation, resolvedAssetLocationId } from "@/lib/operational-assets";
 import type { Asset, AssetType, Location, Movement, Product, Stock } from "@/types/database";
 
 export const BOX_TYPES = ["caixa_preta", "caixa_media", "caixa_grande"] as const;
@@ -12,7 +12,6 @@ export const BOX_TYPE_LABEL: Record<BoxType, string> = {
 
 export const FACTORY_COLUMN = "__factory__";
 export const TRANSIT_COLUMN = "__transit__";
-export const UNLOCATED_COLUMN = "__unlocated__";
 
 export function isBoxAsset(asset: Asset): asset is Asset & { type: BoxType } {
   return asset.type === "caixa_preta" || asset.type === "caixa_media" || asset.type === "caixa_grande";
@@ -24,13 +23,12 @@ export function boxColumnId(asset: Asset, locations: Location[] = []) {
     return factory?.id || FACTORY_COLUMN;
   }
   if (asset.status === "in_transit") return TRANSIT_COLUMN;
-  return asset.location_id || UNLOCATED_COLUMN;
+  return resolvedAssetLocationId(asset, locations) || asset.location_id || "";
 }
 
 export function columnLabel(columnId: string, locations: Location[]) {
   if (columnId === FACTORY_COLUMN) return "Fábrica";
   if (columnId === TRANSIT_COLUMN) return "Em trânsito";
-  if (columnId === UNLOCATED_COLUMN) return "Sem local";
   return locations.find((location) => location.id === columnId)?.name || "—";
 }
 
@@ -41,7 +39,6 @@ export function isFactoryColumn(columnId: string, locations: Location[]) {
 
 export function boxLocationKey(asset: Asset, locations: Location[] = []) {
   const column = boxColumnId(asset, locations);
-  if (column === UNLOCATED_COLUMN) return "";
   if (isFactoryColumn(column, locations)) return factoryLocation(locations)?.id || FACTORY_COLUMN;
   return column;
 }

@@ -7,7 +7,7 @@ import {
   occupyingUniformOrder,
   uniformFullyBlocked,
 } from "@/lib/kit-availability";
-import { categoryLabel } from "@/lib/operational-assets";
+import { categoryLabel, isUniformAsset } from "@/lib/operational-assets";
 import { cn } from "@/lib/utils";
 
 export type UniformPick = Partial<Record<UniformSize, number>>;
@@ -91,6 +91,7 @@ export function KitPicker({
   onChangeUniform,
   onToggleUniformReturn,
 }: KitPickerProps) {
+  const equipment = assets.filter((asset) => !isUniformAsset(asset));
   const activeUniforms = uniforms.filter((row) => row.is_active !== false);
 
   return (
@@ -100,13 +101,13 @@ export function KitPicker({
           <Wrench className="h-3.5 w-3.5" />
           Equipamentos
         </p>
-        {assets.length === 0 ? (
+        {equipment.length === 0 ? (
           <p className="rounded-lg border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
             Nenhum equipamento cadastrado.
           </p>
         ) : (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {assets.map((asset) => {
+            {equipment.map((asset) => {
               const block = equipmentBlock(asset, reservations, reserveFrom, reserveUntil);
               const vai = selectedAssetIds.includes(asset.id);
               const volta = returningAssetIds.includes(asset.id);

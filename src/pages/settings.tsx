@@ -15,8 +15,8 @@ import { QRCodeSVG } from "qrcode.react";
 import type { Location, Product, Asset } from "@/types/database";
 import { AtivosPanel } from "@/pages/settings/ativos-panel";
 import { UniformesPanel } from "@/pages/settings/uniformes-panel";
-import { isBoxAsset } from "@/lib/operational-assets";
-import { assetYardLocations, productStockLocations } from "@/lib/locations";
+import { cleanLocation, isBoxAsset, isUniformAsset } from "@/lib/operational-assets";
+import { assetYardLocations, orderedAssetYardLocations, productStockLocations } from "@/lib/locations";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 const LOCATION_TYPES: Location["type"][] = ["receiving", "storage", "freezer", "shipping", "other"];
@@ -80,6 +80,7 @@ const emptyAssetForm = {
   type: "caixa_media",
   unit_capacity: "",
   photo_url: "",
+  location_id: "",
 };
 
 async function uploadBoxPhoto(file: File) {
@@ -330,6 +331,8 @@ export function SettingsPage() {
   const { locations, products, assets, fetchLocations, fetchProducts, fetchAssets } = useAppStore();
   const productLocations = useMemo(() => productStockLocations(locations), [locations]);
   const assetLocations = useMemo(() => assetYardLocations(locations), [locations]);
+  const boxHomeLocationId =
+    cleanLocation(locations)?.id || orderedAssetYardLocations(locations)[0]?.id || "";
   
   const [locationTypes, setLocationTypes] = useState<SelectOption[]>(defaultLocationTypes);
   const [materialTypes, setMaterialTypes] = useState<SelectOption[]>(defaultMaterialTypes);
@@ -701,6 +704,11 @@ export function SettingsPage() {
         }
       }
 
+      if (assetDialog.assetType === "box" && !assetFormData.location_id) {
+        alert("Escolha o local da caixa.");
+        return;
+      }
+
       if (assetDialog.mode === "create") {
         await createAsset({
           code: assetFormData.code,
@@ -709,6 +717,7 @@ export function SettingsPage() {
           type: assetFormData.type as Asset["type"],
           unit_capacity: unitCapacity,
           photo_url: assetFormData.photo_url || null,
+          location_id: assetFormData.location_id || boxHomeLocationId,
           status: "available",
           is_active: true,
         });
@@ -720,6 +729,7 @@ export function SettingsPage() {
           type: assetFormData.type as Asset["type"],
           unit_capacity: unitCapacity,
           photo_url: assetFormData.photo_url || null,
+          location_id: assetFormData.location_id || boxHomeLocationId,
         });
       }
       
@@ -776,6 +786,7 @@ export function SettingsPage() {
       type: item.type,
       unit_capacity: item.unit_capacity ? String(item.unit_capacity) : "",
       photo_url: item.photo_url || "",
+      location_id: item.location_id || boxHomeLocationId,
     });
     setAssetDialog({ open: true, mode: "edit", assetType, item });
   };
@@ -805,7 +816,9 @@ export function SettingsPage() {
   const compositeProducts = popProducts.filter((p) => p.is_composite);
   const materialProducts = products.filter((p) => p.kind === "material" && p.is_active);
   const boxAssets = assets.filter(isBoxAsset);
-  const equipmentAssets = assets.filter((a) => !isBoxAsset(a));
+  const equipmentAssets = assets.filter(
+    (a) => a.is_active !== false && !isBoxAsset(a) && !isUniformAsset(a)
+  );
 
   // Helper to generate next sequential code
   const getNextCode = (prefix: string, existingCodes: string[]): string => {
@@ -1507,7 +1520,7 @@ export function SettingsPage() {
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => {
-                    setAssetFormData(emptyAssetForm);
+                    setAssetFormData({ ...emptyAssetForm, location_id: boxHomeLocationId });
                     setAssetDialog({ open: true, mode: "create", assetType: "box" });
                   }}
                 >
@@ -1631,6 +1644,7 @@ export function SettingsPage() {
                           type: item.type,
                           unit_capacity: item.unit_capacity ? String(item.unit_capacity) : "",
                           photo_url: item.photo_url || "",
+                          location_id: item.location_id || boxHomeLocationId,
                         });
                         setAssetDialog({ open: true, mode: "create", assetType: "box" });
                       }}
@@ -2295,6 +2309,22 @@ export function SettingsPage() {
                 <p className="text-xs text-muted-foreground">
                   Quantidade máxima de pops ou itens que esta embalagem comporta.
                 </p>
+              </div>
+            )}
+            {assetDialog.assetType === "box" && (
+              <div className="space-y-2">
+                <Label className="text-sm">Local</Label>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={assetFormData.location_id}
+                  onChange={(e) => setAssetFormData({ ...assetFormData, location_id: e.target.value })}
+                >
+                  {orderedAssetYardLocations(locations).map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
           </div>

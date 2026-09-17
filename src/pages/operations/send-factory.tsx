@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { BOX_TYPE_LABEL, canSendToFactory, isBoxAsset } from "@/lib/packaging-board";
-import { factoryLocation } from "@/lib/operational-assets";
+import { cleanLocation, factoryLocation } from "@/lib/operational-assets";
 import { useAppStore } from "@/stores";
 import type { Asset } from "@/types/database";
 
@@ -152,7 +152,9 @@ export function SendFactoryPage() {
                       {isBoxAsset(asset) ? BOX_TYPE_LABEL[asset.type] : asset.type}
                     </Badge>
                     <span className="text-muted-foreground">
-                      {locations.find((location) => location.id === asset.location_id)?.name || "Sem local"}
+                      {locations.find((location) => location.id === asset.location_id)?.name ||
+                        cleanLocation(locations)?.name ||
+                        "Pátio"}
                     </span>
                   </span>
                   <Button

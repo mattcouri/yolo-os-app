@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { ImagePlus, Pencil, Plus, Shirt, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -137,13 +138,22 @@ export function UniformesPanel() {
             <div>
               <CardTitle className="text-base font-medium">Uniformes</CardTitle>
               <CardDescription className="text-xs">
-                Controle simples por tamanho. Camisas saem em pedidos de evento e voltam quando o evento fecha.
+                Controle simples por tamanho. O pátio fica em{" "}
+                <Link to="/gestao/uniformes" className="underline underline-offset-2">
+                  Gestão · Uniformes
+                </Link>
+                .
               </CardDescription>
             </div>
-            <Button size="sm" className="h-8 text-xs" onClick={openCreate}>
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              Novo uniforme
-            </Button>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" className="h-8 text-xs" asChild>
+                <Link to="/gestao/uniformes">Pátio</Link>
+              </Button>
+              <Button size="sm" className="h-8 text-xs" onClick={openCreate}>
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                Novo uniforme
+              </Button>
+            </div>
           </div>
         </CardHeader>
       </Card>

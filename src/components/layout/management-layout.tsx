@@ -18,6 +18,7 @@ import {
   Users,
   Grid3X3,
   Wrench,
+  Shirt,
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
@@ -26,12 +27,13 @@ import { ROLE_LABELS, useAuthProfile } from "@/lib/auth";
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/gestao" },
   { icon: Package, label: "Inventário", path: "/gestao/inventory" },
-  { icon: FileText, label: "Notas Fiscais", path: "/gestao/receipts" },
-  { icon: Box, label: "Embalagens", path: "/gestao/packaging" },
   { icon: Wrench, label: "Ativos", path: "/gestao/ativos" },
-  { icon: Settings, label: "Cadastros", path: "/gestao/settings" },
+  { icon: Box, label: "Embalagens", path: "/gestao/packaging" },
+  { icon: Shirt, label: "Uniformes", path: "/gestao/uniformes" },
   { icon: History, label: "Movimentações", path: "/gestao/movements" },
   { icon: ClipboardList, label: "Histórico de Pedidos", path: "/gestao/reports" },
+  { icon: FileText, label: "Notas Fiscais", path: "/gestao/receipts" },
+  { icon: Settings, label: "Cadastros", path: "/gestao/settings" },
   { icon: Users, label: "Usuários", path: "/gestao/users" },
 ];
 

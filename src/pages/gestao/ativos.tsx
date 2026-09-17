@@ -9,8 +9,10 @@ import { orderedAssetYardLocations } from "@/lib/locations";
 import {
   categoryLabel,
   isBoxAsset,
+  isUniformAsset,
   OPERATIONAL_STATUSES,
   planAssetPlacement,
+  resolvedAssetLocationId,
   statusLabel,
 } from "@/lib/operational-assets";
 import { cn } from "@/lib/utils";
@@ -21,7 +23,6 @@ const selectClass =
   "h-8 w-full max-w-[14rem] rounded-md border border-input bg-background px-2 text-xs";
 
 const STREET_COLUMN = "__street__";
-const UNLOCATED_COLUMN = "__none__";
 
 type FilterId = "all" | "ready" | "dirty" | "out" | "pending" | "exception";
 
@@ -95,22 +96,17 @@ type PatioRow = Asset & {
   editable: boolean;
 };
 
-function boardColumnId(row: Pick<PatioRow, "location_id" | "status">) {
-  if (row.location_id) return row.location_id;
+function boardColumnId(row: Pick<PatioRow, "location_id" | "status">, locations: Location[]) {
   if (OUT_STATUSES.has(row.status)) return STREET_COLUMN;
-  return UNLOCATED_COLUMN;
+  return resolvedAssetLocationId(row, locations) || row.location_id || "";
 }
 
-function boardColumns(yardLocations: Location[], rows: PatioRow[]) {
-  const used = new Set(rows.map(boardColumnId));
-  const extras = [STREET_COLUMN];
-  if (used.has(UNLOCATED_COLUMN)) extras.push(UNLOCATED_COLUMN);
-  return [...yardLocations.map((location) => location.id), ...extras];
+function boardColumns(yardLocations: Location[], _rows: PatioRow[]) {
+  return [...yardLocations.map((location) => location.id), STREET_COLUMN];
 }
 
 function columnTitle(columnId: string, yardLocations: Location[]) {
   if (columnId === STREET_COLUMN) return "Na rua";
-  if (columnId === UNLOCATED_COLUMN) return "Sem local";
   return yardLocations.find((location) => location.id === columnId)?.name || "Local";
 }
 
@@ -215,8 +211,11 @@ export function AtivosPage() {
   }, [equipmentReservations]);
 
   const patio = useMemo<PatioRow[]>(() => {
-    const equipment: PatioRow[] = operational.map((asset) => {
-      const locationName = locations.find((location) => location.id === asset.location_id)?.name || "—";
+    const equipment: PatioRow[] = operational.filter((asset) => !isUniformAsset(asset)).map((asset) => {
+      const resolvedId = resolvedAssetLocationId(asset, locations);
+      const locationName = OUT_STATUSES.has(asset.status)
+        ? "Na rua"
+        : locations.find((location) => location.id === resolvedId)?.name || "—";
       const category = patioCategory(asset);
       const kind = patioKind(asset);
       const reservation = reservationByAsset.get(asset.id);
@@ -326,7 +325,8 @@ export function AtivosPage() {
       });
       if (planned.location_id !== asset.location_id) {
         const toName =
-          locations.find((location) => location.id === planned.location_id)?.name || "sem local";
+          locations.find((location) => location.id === planned.location_id)?.name ||
+          "pátio";
         await createMovement({
           type: "transfer",
           asset_id: asset.id,
@@ -358,13 +358,13 @@ export function AtivosPage() {
         <h1 className="text-2xl font-bold">Ativos</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           O que está em cada local do pátio. Área suja = para limpar. Área limpa = pronto para usar de novo. Uniformes
-          na rua entram automaticamente; no retorno cada peça ganha status e local.
+          na rua entram automaticamente a partir do kit; o cadastro consolidado fica em Uniformes.
         </p>
       </div>
 
       <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
         {columns.map((columnId) => {
-          const cards = patio.filter((row) => boardColumnId(row) === columnId);
+          const cards = patio.filter((row) => boardColumnId(row, locations) === columnId);
           return (
             <section
               key={columnId}
@@ -474,24 +474,31 @@ export function AtivosPage() {
                 header: "Local",
                 width: "w-52",
                 sortable: true,
-                render: (row) => (
+                render: (row) => {
+                  const value =
+                    row.location_id ||
+                    (OUT_STATUSES.has(row.status) ? STREET_COLUMN : resolvedAssetLocationId(row, locations) || "");
+                  return (
                   <select
                     className={selectClass}
-                    value={row.location_id || ""}
+                    value={value}
                     disabled={busyId === row.id || !row.editable}
                     onClick={(event) => event.stopPropagation()}
-                    onChange={(event) =>
-                      void place(row, { locationId: event.target.value || null })
-                    }
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      if (!next || next === STREET_COLUMN) return;
+                      void place(row, { locationId: next });
+                    }}
                   >
-                    <option value="">Sem local</option>
+                    {value === STREET_COLUMN ? <option value={STREET_COLUMN}>Na rua</option> : null}
                     {yardLocations.map((location) => (
                       <option key={location.id} value={location.id}>
                         {location.name}
                       </option>
                     ))}
                   </select>
-                ),
+                  );
+                },
               },
               {
                 key: "orderLabel",

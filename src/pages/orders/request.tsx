@@ -18,6 +18,7 @@ import type { FulfillmentMethod, OrderType, PhysicalState, Profile, UniformSize 
 import { UNIFORM_SIZES } from "@/lib/uniforms";
 import { checkoutStaysOut, availableForSizeOnWindow, equipmentBlock } from "@/lib/kit-availability";
 import { TYPE_LABEL, isClosedOrder, isYoloTrip, locationSummary, needsOrderAddress, tripSummary } from "@/lib/separacao";
+import { isBoxAsset, isUniformAsset } from "@/lib/operational-assets";
 import { StageTag, stageTagFromStatus } from "@/components/separacao/stage-tag";
 
 const REQUEST_TYPES: { value: OrderType; label: string; hint: string }[] = [
@@ -119,9 +120,8 @@ export function OrderRequestPage() {
       assets.filter(
         (a) =>
           a.is_active &&
-          a.type !== "caixa_preta" &&
-          a.type !== "caixa_media" &&
-          a.type !== "caixa_grande" &&
+          !isBoxAsset(a) &&
+          !isUniformAsset(a) &&
           a.control_method !== "quantity"
       ),
     [assets]

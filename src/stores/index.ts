@@ -6,11 +6,13 @@ import {
   ASSET_DIRTY_SYSTEM_KEY,
   ASSET_FACTORY_SYSTEM_KEY,
   cleanLocation,
+  defaultYardLocation,
   factoryLocation,
   getBoxUnitCapacity,
   isBoxAsset,
+  needsYardLocation,
   planAssetPlacement,
-  suggestedAssetCode,
+  resolvedAssetLocationId,
   suggestedBoxCode,
 } from '@/lib/operational-assets';
 import {
@@ -84,6 +86,7 @@ interface AppState {
   getAllProductComponents: () => Promise<{ parent_product_id: string; child_product_id: string; quantity: number }[]>;
   ensureAssembledLocation: () => Promise<Location>;
   ensureAssetYardLocations: () => Promise<void>;
+  ensureAssetPlaces: () => Promise<void>;
   ensureSeparationJobs: () => Promise<void>;
   fetchAssets: () => Promise<void>;
   fetchReceipts: () => Promise<void>;
@@ -431,7 +434,7 @@ const defaultAssets: Asset[] = [
     code: `MEDIA-${String(i + 1).padStart(3, '0')}`,
     name: `Caixa média ${i + 1}`,
     type: 'caixa_media' as const,
-    location_id: null,
+    location_id: '9',
     status: 'available' as const,
     is_active: true,
     unit_capacity: 100,
@@ -507,6 +510,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     rememberCodes(next.inventoryCounts.map((row) => row.count_number));
     await get().ensureAssembledLocation();
     await get().ensureAssetYardLocations();
+    await get().ensureAssetPlaces();
     await get().ensureSeparationJobs();
   },
   
@@ -861,6 +865,40 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  ensureAssetPlaces: async () => {
+    const locations = get().locations;
+    const now = new Date().toISOString();
+    const updates: { id: string; location_id: string }[] = [];
+    for (const asset of get().assets) {
+      if (!asset.is_active) continue;
+      if (asset.location_id) continue;
+      if (!needsYardLocation(asset.status)) continue;
+      const location_id = resolvedAssetLocationId(asset, locations);
+      if (!location_id) continue;
+      updates.push({ id: asset.id, location_id });
+    }
+    if (updates.length === 0) return;
+
+    if (isSupabaseConfigured && supabase) {
+      for (const patch of updates) {
+        const { error } = await supabase
+          .from('assets')
+          .update({ location_id: patch.location_id, updated_at: now })
+          .eq('id', patch.id);
+        if (error) throw new Error(error.message);
+      }
+    }
+
+    const byId = new Map(updates.map((patch) => [patch.id, patch.location_id]));
+    set((state) => ({
+      assets: state.assets.map((asset) =>
+        byId.has(asset.id)
+          ? { ...asset, location_id: byId.get(asset.id)!, updated_at: now }
+          : asset
+      ),
+    }));
+  },
+
   ensureSeparationJobs: async () => {
     const state = get();
     const missing = state.orders.filter(
@@ -891,16 +929,22 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   createAsset: async (data) => {
     const now = new Date().toISOString();
+    const status = data.status || 'available';
+    const location_id =
+      data.location_id ||
+      (needsYardLocation(status) ? defaultYardLocation(status, get().locations)?.id || null : null);
     const newAsset: Asset = {
       id: generateId(),
-      location_id: null,
-      status: 'available',
+      location_id,
+      status,
       is_active: true,
       description: null,
       control_method: 'individual',
       quantity_on_hand: 1,
       custom_fields: {},
       ...data,
+      location_id,
+      status,
       created_at: now,
       updated_at: now,
     };
@@ -921,14 +965,35 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   deleteAsset: async (id) => {
+    const dropFromCatalog = (hardDeleted: boolean) => {
+      const now = new Date().toISOString();
+      set((state) => ({
+        assets: hardDeleted
+          ? state.assets.filter((a) => a.id !== id)
+          : state.assets.map((a) =>
+              a.id === id ? { ...a, is_active: false, updated_at: now } : a
+            ),
+      }));
+    };
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase.from('assets').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      if (!error) {
+        dropFromCatalog(true);
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const { error: deactivateError } = await supabase
+        .from('assets')
+        .update({ is_active: false, updated_at: now })
+        .eq('id', id);
+      if (deactivateError) throw new Error(deactivateError.message);
+      dropFromCatalog(false);
+      return;
     }
-    
-    set((state) => ({
-      assets: state.assets.filter((a) => a.id !== id),
-    }));
+
+    dropFromCatalog(true);
   },
   
   fetchReceipts: async () => {
@@ -2994,7 +3059,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     const target = Math.round(newQuantity);
     const locations = get().locations;
-    const destId = locationId === undefined ? cleanLocation(locations)?.id || null : locationId || null;
+    const destId = locationId || cleanLocation(locations)?.id || null;
+    if (!destId) throw new Error('Escolha um local cadastrado.');
     const active = get().assets.filter(
       (asset) =>
         isBoxAsset(asset) &&
@@ -3141,7 +3207,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const fromKey = fromLocationId || '';
     const toKey = toLocationId || '';
     if (fromKey === toKey) return;
-    if (toKey === TRANSIT_COLUMN) throw new Error('Escolha um local cadastrado.');
+    if (!toKey || toKey === TRANSIT_COLUMN) throw new Error('Escolha um local cadastrado.');
 
     const locations = get().locations;
     const factory = factoryLocation(locations);
@@ -3452,35 +3518,6 @@ export const useAppStore = create<AppState>((set, get) => ({
             ],
           }));
         }
-      }
-
-      for (const unit of itemUnits) {
-        const status = returnUnitAssetStatus(unit.condition);
-        const locationId = unit.condition === 'lost' ? null : unit.location_id;
-        const code = suggestedAssetCode(
-          'uniforme',
-          get().assets.map((asset) => asset.code)
-        );
-        const asset = await get().createAsset({
-          code,
-          name: itemUnits.length > 1 ? `${item.name} · ${unit.unit_index + 1}` : item.name,
-          type: 'other',
-          category: 'uniforme',
-          status,
-          location_id: locationId,
-          last_moved_at: now,
-          sku_code: `${item.id}:${unit.unit_index}`,
-          description: `${order.order_number} · retorno`,
-        });
-        await get().createMovement({
-          type: unit.condition === 'lost' ? 'dispatch' : 'return',
-          order_id: orderId,
-          asset_id: asset.id,
-          quantity: 1,
-          to_location_id: locationId || undefined,
-          reason: `Retorno ${order.order_number}`,
-          notes: `${item.name} · ${unit.condition}`,
-        });
       }
     }
   },

@@ -17,14 +17,18 @@ export function isBoxAsset(asset: Pick<Asset, "type">) {
   return BOX_ASSET_TYPES.includes(asset.type);
 }
 
+export function isUniformAsset(asset: Pick<Asset, "category" | "code">) {
+  return asset.category === "uniforme" || /^UNI-/i.test(asset.code || "");
+}
+
 export function getBoxUnitCapacity(asset: Pick<Asset, "type" | "unit_capacity">) {
   if (asset.unit_capacity && asset.unit_capacity > 0) return asset.unit_capacity;
   if (asset.type === "caixa_media") return 100;
   return 0;
 }
 
-export function isOperationalAsset(asset: Pick<Asset, "type">) {
-  return !isBoxAsset(asset);
+export function isOperationalAsset(asset: Pick<Asset, "type" | "category" | "code">) {
+  return !isBoxAsset(asset) && !isUniformAsset(asset);
 }
 
 export const ASSET_CATEGORIES: { value: string; label: string }[] = [
@@ -41,6 +45,8 @@ export const ASSET_CATEGORIES: { value: string; label: string }[] = [
   { value: "uniforme", label: "Uniforme" },
   { value: "other", label: "Outro" },
 ];
+
+export const EQUIPMENT_CATEGORIES = ASSET_CATEGORIES.filter((c) => c.value !== "uniforme");
 
 export const CONTROL_METHODS: { value: AssetControlMethod; label: string; hint: string }[] = [
   { value: "individual", label: "Individual", hint: "Um registro por peça identificável" },
@@ -125,6 +131,27 @@ export function factoryLocation(locations: Location[]) {
   return locations.find((location) => location.system_key === ASSET_FACTORY_SYSTEM_KEY);
 }
 
+const STREET_OR_TRANSIT_STATUSES = new Set<AssetStatus>(["reserved", "in_use", "in_transit"]);
+
+export function needsYardLocation(status: AssetStatus) {
+  return !STREET_OR_TRANSIT_STATUSES.has(status);
+}
+
+export function defaultYardLocation(status: AssetStatus, locations: Location[]) {
+  if (status === "cleaning") return dirtyLocation(locations) || cleanLocation(locations);
+  if (status === "at_factory") return factoryLocation(locations) || cleanLocation(locations);
+  return cleanLocation(locations) || dirtyLocation(locations) || factoryLocation(locations);
+}
+
+export function resolvedAssetLocationId(
+  asset: Pick<Asset, "status" | "location_id">,
+  locations: Location[]
+) {
+  if (asset.location_id) return asset.location_id;
+  if (!needsYardLocation(asset.status)) return null;
+  return defaultYardLocation(asset.status, locations)?.id || null;
+}
+
 export function planAssetPlacement(
   asset: Pick<Asset, "status" | "location_id">,
   change: { status?: AssetStatus; locationId?: string | null },
@@ -159,6 +186,10 @@ export function planAssetPlacement(
       error:
         "Este ativo ainda está reservado em um pedido. Encerre o retorno antes de marcar como disponível.",
     };
+  }
+
+  if (!location_id && needsYardLocation(status)) {
+    location_id = defaultYardLocation(status, locations)?.id || null;
   }
 
   return { status, location_id };

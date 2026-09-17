@@ -19,6 +19,7 @@ import { PrepareReceiptPage } from "@/pages/operations/prepare-receipt";
 import { ReceiptsPage } from "@/pages/gestao/receipts";
 import { PackagingPage } from "@/pages/gestao/packaging";
 import { AtivosPage } from "@/pages/gestao/ativos";
+import { UniformesPage } from "@/pages/gestao/uniformes";
 import { BatchTransferPage } from "@/pages/operations/transfers";
 import { SendFactoryPage } from "@/pages/operations/send-factory";
 import { AssemblePage } from "@/pages/operations/assemble";
@@ -344,6 +345,14 @@ export default function App() {
           element={
             <ManagementRoute>
               <AtivosPage />
+            </ManagementRoute>
+          }
+        />
+        <Route
+          path="/gestao/uniformes"
+          element={
+            <ManagementRoute>
+              <UniformesPage />
             </ManagementRoute>
           }
         />

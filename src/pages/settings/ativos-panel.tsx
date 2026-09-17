@@ -23,7 +23,7 @@ import { CreatableSelect } from "@/components/ui/creatable-select";
 import { cn } from "@/lib/utils";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import {
-  ASSET_CATEGORIES,
+  EQUIPMENT_CATEGORIES,
   CONTROL_METHODS,
   OPERATIONAL_STATUSES,
   TECHNICAL_CATEGORIES,
@@ -37,6 +37,7 @@ import {
   statusLabel,
   suggestedAssetCode,
   warrantyStatus,
+  cleanLocation,
   isOperationalAsset,
 } from "@/lib/operational-assets";
 import { orderedAssetYardLocations } from "@/lib/locations";
@@ -225,11 +226,14 @@ export function AtivosPanel() {
   } = useAppStore();
 
   const operationalAssets = useMemo(
-    () => assets.filter(isOperationalAsset),
+    () => assets.filter((asset) => asset.is_active !== false && isOperationalAsset(asset)),
     [assets]
   );
+  const yardLocations = useMemo(() => orderedAssetYardLocations(locations), [locations]);
+  const homeLocationId =
+    cleanLocation(locations)?.id || yardLocations[0]?.id || "";
 
-  const [categories, setCategories] = useState(ASSET_CATEGORIES);
+  const [categories, setCategories] = useState(EQUIPMENT_CATEGORIES);
   const [form, setForm] = useState(emptyForm);
   const [components, setComponents] = useState<ComponentDraft[]>([]);
   const [attachments, setAttachments] = useState<AssetAttachment[]>([]);
@@ -263,7 +267,11 @@ export function AtivosPanel() {
   };
 
   const openCreate = () => {
-    setForm({ ...emptyForm, code: suggestedAssetCode("freezer", operationalAssets.map((a) => a.code)) });
+    setForm({
+      ...emptyForm,
+      code: suggestedAssetCode("freezer", operationalAssets.map((a) => a.code)),
+      location_id: homeLocationId,
+    });
     setComponents([]);
     setAttachments([]);
     setExtraFields([]);
@@ -278,7 +286,7 @@ export function AtivosPanel() {
       control_method: item.control_method || "individual",
       code: item.code,
       acquired_at: item.acquired_at || "",
-      location_id: item.location_id || "",
+      location_id: item.location_id || homeLocationId,
       status: item.status,
       photo_url: item.photo_url || "",
       description: item.description || "",
@@ -351,6 +359,10 @@ export function AtivosPanel() {
     setError("");
     if (!form.name.trim() || !form.code.trim()) {
       setError("Nome e ID único são obrigatórios.");
+      return;
+    }
+    if (!form.location_id) {
+      setError("Escolha o local atual do ativo.");
       return;
     }
     if (duplicateOf("code", form.code)) {
@@ -496,6 +508,7 @@ export function AtivosPanel() {
         </div>
       </CardHeader>
       <CardContent className="pt-0">
+        {error && !dialog.open ? <p className="mb-3 text-sm text-destructive">{error}</p> : null}
         <DataTable
           data={operationalAssets}
           searchKey="name"
@@ -592,7 +605,15 @@ export function AtivosPanel() {
                 className="h-7 w-7 text-destructive hover:text-destructive"
                 title="Excluir"
                 onClick={() => {
-                  if (confirm(`Excluir ${item.name}?`)) deleteAsset(item.id);
+                  void (async () => {
+                    if (!confirm(`Excluir ${item.name}?`)) return;
+                    setError("");
+                    try {
+                      await deleteAsset(item.id);
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Não foi possível excluir.");
+                    }
+                  })();
                 }}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -697,8 +718,7 @@ export function AtivosPanel() {
                   value={form.location_id}
                   onChange={(e) => setField("location_id", e.target.value)}
                 >
-                  <option value="">Sem local</option>
-                  {orderedAssetYardLocations(locations).map((l) => (
+                  {yardLocations.map((l) => (
                     <option key={l.id} value={l.id}>{l.name}</option>
                   ))}
                 </select>
