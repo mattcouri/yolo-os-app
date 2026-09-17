@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
-import { ArrowRight, Grid3X3, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Grid3X3, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useAppStore } from "@/stores";
+import { productStockLocations } from "@/lib/locations";
 
 export function InventoryCountPage() {
   const {
@@ -20,8 +20,9 @@ export function InventoryCountPage() {
     updateInventoryCount,
   } = useAppStore();
 
+  const productLocations = productStockLocations(locations, true);
   const [selectedLocation, setSelectedLocation] = useState(
-    locations[2]?.id || locations[0]?.id
+    productLocations[0]?.id || locations[0]?.id
   );
   const [activeCount, setActiveCount] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -58,14 +59,6 @@ export function InventoryCountPage() {
 
   return (
     <div className="max-w-4xl mx-auto pb-12">
-      <Link
-        to="/operations/actions"
-        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mt-6"
-      >
-        <ArrowRight className="w-4 h-4 rotate-180" />
-        Operações
-      </Link>
-
       <div className="py-6">
         <span className="text-xs font-semibold text-primary tracking-wider uppercase">
           CONTAGEM FÍSICA
@@ -94,7 +87,7 @@ export function InventoryCountPage() {
                 value={selectedLocation}
                 onChange={(e) => setSelectedLocation(e.target.value)}
               >
-                {locations.map((loc) => (
+                {productLocations.map((loc) => (
                   <option key={loc.id} value={loc.id}>
                     {loc.name}
                   </option>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowRight, Plus, Trash2, CheckCircle2, IceCream, Package, Pencil } from "lucide-react";
+import { Plus, Trash2, CheckCircle2, IceCream, Package, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,7 +17,7 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { FulfillmentMethod, OrderType, PhysicalState, Profile, UniformSize } from "@/types/database";
 import { UNIFORM_SIZES } from "@/lib/uniforms";
 import { checkoutStaysOut, availableForSizeOnWindow, equipmentBlock } from "@/lib/kit-availability";
-import { TYPE_LABEL, isYoloTrip, locationSummary, needsOrderAddress, tripSummary } from "@/lib/separacao";
+import { TYPE_LABEL, isClosedOrder, isYoloTrip, locationSummary, needsOrderAddress, tripSummary } from "@/lib/separacao";
 import { StageTag, stageTagFromStatus } from "@/components/separacao/stage-tag";
 
 const REQUEST_TYPES: { value: OrderType; label: string; hint: string }[] = [
@@ -565,10 +565,6 @@ export function OrderRequestPage() {
 
   return (
     <div className="mx-auto max-w-2xl pb-16">
-      <Link to="/pedidos/lista" className="mt-6 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowRight className="h-4 w-4 rotate-180" />
-        Acompanhar
-      </Link>
       <div className="py-5">
         <h1 className="text-2xl font-bold md:text-3xl">
           {isEditing ? `Editar ${editingOrder?.order_number || "pedido"}` : "Nova solicitação"}
@@ -846,7 +842,7 @@ export function OrderRequestPage() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">O que vai · kit</p>
               <p className="mt-0.5 text-[11px] text-muted-foreground">
-                Marque vai para o que sai. Volta fica ligado por padrão; desmarque se o item permanece com o destinatário — entra em Relatórios → Ativos na rua.
+                Marque vai para o que sai. Volta fica ligado por padrão; desmarque se o item permanece com o destinatário — entra em Histórico de Pedidos → Ativos na rua.
               </p>
             </div>
             <KitPicker
@@ -914,10 +910,7 @@ export function OrderRequestPage() {
           </p>
         )}
 
-        <div className="flex items-center gap-3">
-          <Button type="button" variant="outline" onClick={() => navigate("/pedidos/lista")}>
-            Voltar
-          </Button>
+        <div>
           <Button type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Salvando…" : isEditing ? "Salvar pedido" : "Enviar para Separação"}
           </Button>
@@ -934,7 +927,11 @@ export function OrderListPage() {
   const [deleting, setDeleting] = useState<(typeof orders)[number] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const visible = orders.filter((order) => order.status !== "cancelled");
+  const visible = orders.filter((order) => {
+    if (order.status === "cancelled") return false;
+    const job = separationJobs.find((row) => row.order_id === order.id);
+    return !isClosedOrder(order, job);
+  });
 
   const handleDelete = async () => {
     if (!deleting) return;
@@ -952,14 +949,10 @@ export function OrderListPage() {
 
   return (
     <div className="mx-auto max-w-3xl pb-12">
-      <Link to="/pedidos" className="mt-6 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowRight className="h-4 w-4 rotate-180" />
-        Pedidos
-      </Link>
       <div className="flex items-center justify-between py-5">
         <div>
           <h1 className="text-2xl font-bold md:text-3xl">Acompanhar</h1>
-          <p className="mt-1 text-sm text-muted-foreground">O mesmo ID segue até o retorno em Separação. Dá para editar ou excluir o que foi colocado.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Pedidos em aberto e em andamento. Encerrados ficam em Histórico de Pedidos.</p>
         </div>
         <Button asChild>
           <Link to="/pedidos/novo">
@@ -975,7 +968,8 @@ export function OrderListPage() {
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
             <CheckCircle2 className="mx-auto mb-3 h-10 w-10 opacity-40" />
-            <p>Nenhum pedido ainda.</p>
+            <p>Nenhum pedido em andamento.</p>
+            <p className="mt-1 text-xs">Encerrados ficam em Histórico de Pedidos.</p>
             <Button asChild className="mt-4">
               <Link to="/pedidos/novo">Criar o primeiro</Link>
             </Button>

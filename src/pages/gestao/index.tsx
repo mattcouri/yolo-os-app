@@ -21,7 +21,7 @@ export function GestaoDashboardPage() {
     stock.filter((s) => s.status === "analysis").length +
     materialStock.filter((m) => m.status === "analysis").length;
   const openOrders = orders.filter(
-    (o) => o.status !== "completed" && o.status !== "cancelled"
+    (o) => o.status !== "completed" && o.status !== "cancelled" && o.status !== "retorno"
   ).length;
   const activeSeparations = separationJobs.filter((j) => j.stage !== "retorno").length;
 

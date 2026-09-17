@@ -42,7 +42,7 @@ function SubActionCard({
 export function PedidosPage() {
   const { orders } = useAppStore();
   const activeOrders = orders.filter(
-    (o) => o.status !== "completed" && o.status !== "cancelled"
+    (o) => o.status !== "completed" && o.status !== "cancelled" && o.status !== "retorno"
   );
 
   return (
@@ -68,7 +68,7 @@ export function PedidosPage() {
         />
         <SubActionCard
           title="Acompanhar"
-          description="Ver todos os pedidos abertos, em separação e históricos."
+          description="Ver pedidos abertos e em andamento. Encerrados vão para Histórico de Pedidos."
           icon={<List className="w-7 h-7" />}
           to="/pedidos/lista"
           badge={

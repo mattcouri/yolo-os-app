@@ -1,12 +1,14 @@
 import { useState, useRef, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, Plus, Trash2, QrCode, Package, CheckCircle2, AlertCircle, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Plus, Trash2, QrCode, Package, CheckCircle2, AlertCircle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useAppStore } from "@/stores";
+import { productStockLocations } from "@/lib/locations";
+import { factoryLocation } from "@/lib/operational-assets";
 import type { Product } from "@/types/database";
 
 const PRODUCT_LINE_LABELS: Record<string, string> = {
@@ -79,7 +81,7 @@ interface ScannedBox {
 }
 
 function inventoryDestinations(locations: ReturnType<typeof useAppStore.getState>["locations"]) {
-  return locations.filter((location) => location.is_active && location.type !== "receiving");
+  return productStockLocations(locations, true).filter((location) => location.type !== "receiving");
 }
 
 function defaultInventoryLocationId(locations: ReturnType<typeof useAppStore.getState>["locations"]) {
@@ -99,7 +101,10 @@ export function ReceivingPage() {
   const compositeProducts = sortCatalog(activeProducts.filter((p) => p.kind === "pop" && p.is_composite));
   const materialProducts = sortCatalog(activeProducts.filter((p) => p.kind === "material"));
   const allProducts = [...simpleProducts, ...compositeProducts, ...materialProducts];
-  const receivingLocation = locations.find((l) => l.type === "receiving") || locations[0];
+  const receivingLocation =
+    productStockLocations(locations, true).find((l) => l.type === "receiving") ||
+    productStockLocations(locations, true)[0] ||
+    locations[0];
   const stockDestinations = inventoryDestinations(locations);
 
   const [nfNumber, setNfNumber] = useState("");
@@ -128,9 +133,10 @@ export function ReceivingPage() {
   const scannerRef = useRef<HTMLInputElement>(null);
 
   // Available boxes for dropdown (boxes that are at factory or in transit)
+  const factory = factoryLocation(locations);
   const availableBoxes = assets.filter(a => 
     (a.type === "caixa_preta" || a.type === "caixa_grande" || a.type === "caixa_media") &&
-    (a.status === "at_factory" || a.status === "in_transit" || a.status === "available") &&
+    (a.status === "at_factory" || a.location_id === factory?.id || a.status === "in_transit" || a.status === "available") &&
     !scannedBoxes.some(b => b.code === a.code)
   );
 
@@ -361,14 +367,6 @@ export function ReceivingPage() {
 
   return (
     <div className="max-w-3xl mx-auto pb-12">
-      <Link
-        to="/operacoes"
-        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mt-6"
-      >
-        <ArrowRight className="w-4 h-4 rotate-180" />
-        Operações
-      </Link>
-
       <div className="py-6">
         <h1 className="text-2xl md:text-3xl font-bold">Recebimento</h1>
         <p className="text-muted-foreground mt-1">
@@ -615,7 +613,7 @@ export function ReceivingPage() {
                             </p>
                           </div>
                           <Badge variant="outline" className="text-xs">
-                            {asset.status === "at_factory" ? "Na fábrica" :
+                            {asset.status === "at_factory" || asset.location_id === factory?.id ? "Fábrica" :
                              asset.status === "in_transit" ? "Em trânsito" : "Disponível"}
                           </Badge>
                         </button>
@@ -781,13 +779,6 @@ export function ReceivingPage() {
         )}
 
         <div className="flex items-center gap-4 pt-4">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => navigate("/operations/actions")}
-          >
-            Voltar
-          </Button>
           <Button type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Registrando..." : isDirect ? "Registrar nota e estoque" : "Registrar recebimento"}
           </Button>

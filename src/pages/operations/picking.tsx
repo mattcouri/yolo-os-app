@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
-import { ArrowRight, Package, PackageMinus, PackageOpen } from "lucide-react";
+import { Package, PackageMinus, PackageOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -85,14 +84,6 @@ export function PickingPage() {
 
   return (
     <div className="max-w-4xl mx-auto pb-12">
-      <Link
-        to="/operations/transfers"
-        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mt-6"
-      >
-        <ArrowRight className="w-4 h-4 rotate-180" />
-        Movimentar
-      </Link>
-
       <div className="py-6">
         <h1 className="text-2xl md:text-3xl font-bold">Caixa de separação</h1>
         <p className="text-muted-foreground mt-1">

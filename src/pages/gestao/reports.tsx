@@ -1,26 +1,285 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { MapPin } from "lucide-react";
+import { ClipboardList, MapPin } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/ui/data-table";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { streetAssets, type StreetAssetRow } from "@/lib/ativos-na-rua";
+import {
+  TYPE_LABEL,
+  formatEventDay,
+  isClosedOrder,
+  locationSummary,
+  parseCloseOut,
+  startOfDay,
+} from "@/lib/separacao";
 import { useAppStore } from "@/stores";
+import type { Order, OrderItem, SeparationJob } from "@/types/database";
+
+type HistoryRow = {
+  id: string;
+  orderNumber: string;
+  type: string;
+  organization: string;
+  eventDate: string;
+  closedAt: string;
+  closedSort: string;
+  items: string;
+  retorno: string;
+  search: string;
+};
+
+function closedAtDate(order: Order, job?: SeparationJob | null) {
+  const close = parseCloseOut(order.return_description);
+  if (close?.closed_at) {
+    const date = new Date(close.closed_at);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  if (order.updated_at) {
+    const date = new Date(order.updated_at);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  if (job?.updated_at) {
+    const date = new Date(job.updated_at);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  return null;
+}
+
+function inClosedRange(date: Date | null, from: string, to: string) {
+  if (!from && !to) return true;
+  if (!date) return false;
+  const time = date.getTime();
+  if (from) {
+    const start = startOfDay(new Date(`${from}T00:00:00`)).getTime();
+    if (time < start) return false;
+  }
+  if (to) {
+    const end = new Date(`${to}T00:00:00`);
+    end.setHours(23, 59, 59, 999);
+    if (time > end.getTime()) return false;
+  }
+  return true;
+}
+
+function itemLine(item: OrderItem, closeReturned?: number) {
+  const qty = Math.max(1, Math.round(item.quantity));
+  if (!item.is_returnable) return `${item.name} · ${qty} (fica)`;
+  if (closeReturned == null) return `${item.name} · ${qty}`;
+  return `${item.name} · ${closeReturned}/${qty} voltaram`;
+}
+
+function buildHistoryRows(
+  orders: Order[],
+  orderItems: OrderItem[],
+  jobs: SeparationJob[]
+): HistoryRow[] {
+  return orders
+    .filter((order) => {
+      if (order.status === "cancelled") return false;
+      const job = jobs.find((row) => row.order_id === order.id);
+      return isClosedOrder(order, job);
+    })
+    .map((order) => {
+      const job = jobs.find((row) => row.order_id === order.id);
+      const items = orderItems.filter((item) => item.order_id === order.id);
+      const close = parseCloseOut(order.return_description);
+      const closed = closedAtDate(order, job);
+      const event = order.needed_date
+        ? formatEventDay(new Date(`${order.needed_date}T00:00:00`))
+        : "—";
+      const itemText = items
+        .map((item) => {
+          const line = close?.lines.find((row) => row.item_id === item.id);
+          return itemLine(item, line?.returned);
+        })
+        .join(" · ");
+      const returnable = items.filter((item) => item.is_returnable);
+      const returned = close
+        ? close.lines.reduce((sum, line) => sum + line.returned, 0)
+        : 0;
+      const sent = close
+        ? close.lines.reduce((sum, line) => sum + line.sent, 0)
+        : returnable.reduce((sum, item) => sum + Math.max(1, Math.round(item.quantity)), 0);
+      const retorno = returnable.length
+        ? close
+          ? `${returned}/${sent} conferidos`
+          : "Encerrado"
+        : "Sem retorno";
+      const type = TYPE_LABEL[order.order_type] || order.order_type;
+      const organization = order.organization || order.recipient_name || "—";
+      return {
+        id: order.id,
+        orderNumber: order.order_number,
+        type,
+        organization,
+        eventDate: event,
+        closedAt: closed ? formatEventDay(closed) : "—",
+        closedSort: closed?.toISOString() || order.updated_at || "",
+        items: itemText || "—",
+        retorno,
+        search: [
+          order.order_number,
+          type,
+          organization,
+          order.recipient_name,
+          locationSummary(order, items),
+          itemText,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase(),
+      };
+    })
+    .sort((a, b) => b.closedSort.localeCompare(a.closedSort));
+}
 
 export function ReportsPage() {
-  const { orders, orderItems, assets, uniforms, uniformCheckouts } = useAppStore();
+  const { orders, orderItems, separationJobs, assets, uniforms, uniformCheckouts } = useAppStore();
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
 
-  const rows = useMemo(
+  const history = useMemo(() => {
+    const rows = buildHistoryRows(orders, orderItems, separationJobs);
+    if (!from && !to) return rows;
+    return rows.filter((row) => {
+      const order = orders.find((item) => item.id === row.id);
+      const job = separationJobs.find((item) => item.order_id === row.id);
+      return inClosedRange(order ? closedAtDate(order, job) : null, from, to);
+    });
+  }, [orders, orderItems, separationJobs, from, to]);
+
+  const streetRows = useMemo(
     () => streetAssets(orders, orderItems, assets, uniforms, uniformCheckouts),
     [orders, orderItems, assets, uniforms, uniformCheckouts]
   );
 
+  const setThisMonth = () => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    setFrom(`${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`);
+    setTo(`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`);
+  };
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Relatórios</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Onde está o que saiu da base e não tem volta prevista.</p>
+        <h1 className="text-2xl font-bold">Histórico de Pedidos</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Pedidos encerrados na Separação, com conferência de retorno. Use o filtro de datas para consultar períodos anteriores.
+        </p>
       </div>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <ClipboardList className="h-4 w-4" />
+                Pedidos encerrados
+              </CardTitle>
+              <CardDescription>O mesmo ID do Acompanhar. Encerrar não apaga o pedido.</CardDescription>
+            </div>
+            <Badge variant="secondary">{history.length}</Badge>
+          </div>
+          <div className="flex flex-wrap items-end gap-3 pt-3">
+            <div className="space-y-1">
+              <Label htmlFor="history-from" className="text-xs">
+                De
+              </Label>
+              <Input
+                id="history-from"
+                type="date"
+                className="h-9 w-[10.5rem]"
+                value={from}
+                onChange={(event) => setFrom(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="history-to" className="text-xs">
+                Até
+              </Label>
+              <Input
+                id="history-to"
+                type="date"
+                className="h-9 w-[10.5rem]"
+                value={to}
+                onChange={(event) => setTo(event.target.value)}
+              />
+            </div>
+            <Button type="button" variant="outline" size="sm" className="h-9" onClick={setThisMonth}>
+              Este mês
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-9"
+              onClick={() => {
+                setFrom("");
+                setTo("");
+              }}
+            >
+              Todo o período
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <DataTable
+            data={history}
+            searchKey="search"
+            searchPlaceholder="Buscar pedido, cliente, item…"
+            emptyMessage="Nenhum pedido encerrado neste período."
+            maxHeight="calc(100vh - 420px)"
+            columns={[
+              {
+                key: "orderNumber",
+                header: "Pedido",
+                width: "w-28",
+                sortable: true,
+                render: (row: HistoryRow) => (
+                  <Link to={`/separacao/${row.id}`} className="font-medium text-primary hover:underline">
+                    {row.orderNumber}
+                  </Link>
+                ),
+              },
+              {
+                key: "type",
+                header: "Tipo",
+                width: "w-24",
+                render: (row: HistoryRow) => <Badge variant="outline">{row.type}</Badge>,
+              },
+              {
+                key: "organization",
+                header: "Cliente / evento",
+                sortable: true,
+                render: (row: HistoryRow) => <span className="truncate">{row.organization}</span>,
+              },
+              { key: "eventDate", header: "Data do pedido", width: "w-28", sortable: true },
+              { key: "closedAt", header: "Encerrado em", width: "w-28", sortable: true },
+              {
+                key: "items",
+                header: "Itens",
+                render: (row: HistoryRow) => (
+                  <p className="max-w-xs truncate text-xs text-muted-foreground" title={row.items}>
+                    {row.items}
+                  </p>
+                ),
+              },
+              {
+                key: "retorno",
+                header: "Retorno",
+                width: "w-32",
+                render: (row: HistoryRow) => <Badge variant="secondary">{row.retorno}</Badge>,
+              },
+            ]}
+          />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="pb-3">
@@ -34,12 +293,12 @@ export function ReportsPage() {
                 Saiu e não volta: marcado sem volta no pedido, ou conferido no encerramento como não retornado.
               </CardDescription>
             </div>
-            <Badge variant="secondary">{rows.length}</Badge>
+            <Badge variant="secondary">{streetRows.length}</Badge>
           </div>
         </CardHeader>
         <CardContent className="pt-0">
           <DataTable
-            data={rows}
+            data={streetRows}
             searchKey="search"
             searchPlaceholder="Buscar ativo, pedido, endereço…"
             emptyMessage="Nenhum ativo na rua. Itens com volta ficam no calendário de Separação até o retorno."

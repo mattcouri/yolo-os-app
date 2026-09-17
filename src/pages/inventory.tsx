@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataTable } from "@/components/ui/data-table";
 import { useAppStore } from "@/stores";
 import { assembledLocation, isAssemblyBox, stockLeafUnits } from "@/lib/assembly";
+import { productStockLocations } from "@/lib/locations";
 import type { Asset, Location, MaterialStock, Product, ProductComponent, Stock } from "@/types/database";
 
 type GradeKey = "AAA" | "B" | "C" | "blocked" | "analysis";
@@ -372,7 +373,7 @@ export function InventoryPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const activeLocations = useMemo(
-    () => [...locations].filter((l) => l.is_active).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "pt-BR")),
+    () => productStockLocations(locations, true),
     [locations]
   );
 

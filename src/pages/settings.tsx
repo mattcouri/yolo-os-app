@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +16,7 @@ import type { Location, Product, Asset } from "@/types/database";
 import { AtivosPanel } from "@/pages/settings/ativos-panel";
 import { UniformesPanel } from "@/pages/settings/uniformes-panel";
 import { isBoxAsset } from "@/lib/operational-assets";
+import { assetYardLocations, productStockLocations } from "@/lib/locations";
 
 const LOCATION_TYPES: Location["type"][] = ["receiving", "storage", "freezer", "shipping", "other"];
 
@@ -70,6 +71,100 @@ const defaultPackagingTypes: SelectOption[] = [
 const getTypeLabel = (types: SelectOption[], value: string) => {
   return types.find((t) => t.value === value)?.label || value;
 };
+
+function LocationCadastroTable({
+  rows,
+  locationTypes,
+  emptyMessage,
+  onEdit,
+  onDuplicate,
+  onDelete,
+}: {
+  rows: Location[];
+  locationTypes: SelectOption[];
+  emptyMessage: string;
+  onEdit: (item: Location) => void;
+  onDuplicate: (item: Location) => void;
+  onDelete: (item: Location) => void;
+}) {
+  return (
+    <DataTable
+      data={rows}
+      searchKey="name"
+      searchPlaceholder="Buscar local..."
+      emptyMessage={emptyMessage}
+        columns={[
+          {
+            key: "name",
+            header: "Nome",
+            render: (item) => (
+              <div className="flex items-center gap-2">
+                <MapPin className="w-3.5 h-3.5 text-muted-foreground" />
+                <span className="font-medium">{item.name}</span>
+                {item.system_key && (
+                  <Badge variant="outline" className="text-[10px] font-normal">Reservado</Badge>
+                )}
+              </div>
+            ),
+          },
+          {
+            key: "type",
+            header: "Tipo",
+            width: "w-32",
+            render: (item) => (
+              <Badge variant="secondary" className="text-xs font-normal">
+                {getTypeLabel(locationTypes, item.type)}
+              </Badge>
+            ),
+          },
+          {
+            key: "requires_box",
+            header: "Estoque",
+            width: "w-28",
+            render: (item) => (
+              <span className="text-xs text-muted-foreground">
+                {item.purpose === "asset"
+                  ? "Ativos"
+                  : item.requires_box === false
+                    ? "Solto"
+                    : "Em caixa"}
+              </span>
+            ),
+          },
+          {
+            key: "is_active",
+            header: "Status",
+            width: "w-24",
+            render: (item) => (
+              <Badge variant={item.is_active ? "default" : "outline"} className="text-xs font-normal">
+                {item.is_active ? "Ativo" : "Inativo"}
+              </Badge>
+            ),
+          },
+        ]}
+        actions={(item) => (
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onEdit(item)} title="Editar">
+              <Pencil className="w-3.5 h-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onDuplicate(item)} title="Duplicar">
+              <Copy className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-destructive hover:text-destructive"
+              disabled={Boolean(item.system_key)}
+              onClick={() => onDelete(item)}
+              title={item.system_key ? "Local reservado do fluxo" : "Excluir"}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+        )}
+      />
+  );
+}
 
 interface ComponentItem {
   product_id: string;
@@ -166,6 +261,8 @@ function CompositionPopover({
 
 export function SettingsPage() {
   const { locations, products, assets, fetchLocations, fetchProducts, fetchAssets } = useAppStore();
+  const productLocations = useMemo(() => productStockLocations(locations), [locations]);
+  const assetLocations = useMemo(() => assetYardLocations(locations), [locations]);
   
   const [locationTypes, setLocationTypes] = useState<SelectOption[]>(defaultLocationTypes);
   const [materialTypes, setMaterialTypes] = useState<SelectOption[]>(defaultMaterialTypes);
@@ -203,10 +300,12 @@ export function SettingsPage() {
   const [formData, setFormData] = useState<{
     name: string;
     type: Location["type"];
+    purpose: Location["purpose"];
     requires_box: boolean;
   }>({
     name: "",
     type: "storage",
+    purpose: "product",
     requires_box: true,
   });
 
@@ -401,21 +500,23 @@ export function SettingsPage() {
       await createLocation({
         name: formData.name,
         type: formData.type,
+        purpose: formData.purpose,
         is_active: true,
         sort_order: locations.length,
-        requires_box: formData.requires_box,
+        requires_box: formData.purpose === "asset" ? false : formData.requires_box,
         system_key: null,
       });
     } else if (locationDialog.item) {
       await updateLocation(locationDialog.item.id, {
         name: formData.name,
         type: formData.type,
-        requires_box: formData.requires_box,
+        purpose: formData.purpose,
+        requires_box: formData.purpose === "asset" ? false : formData.requires_box,
       });
     }
     
     setLocationDialog({ open: false, mode: "create" });
-    setFormData({ name: "", type: "storage", requires_box: true });
+    setFormData({ name: "", type: "storage", purpose: "product", requires_box: true });
   };
 
   const handleProductSubmit = async () => {
@@ -569,6 +670,7 @@ export function SettingsPage() {
     setFormData({
       name: item.name,
       type: item.type,
+      purpose: item.purpose === "asset" ? "asset" : "product",
       requires_box: item.requires_box !== false,
     });
     setLocationDialog({ open: true, mode: "edit", item });
@@ -706,16 +808,16 @@ export function SettingsPage() {
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-base font-medium">Locais de Estoque</CardTitle>
+                  <CardTitle className="text-base font-medium">Produtos e produtos montados</CardTitle>
                   <CardDescription className="text-xs">
-                    Áreas onde os produtos podem ser armazenados
+                    Locais de estoque de SKUs, materiais e produtos montados
                   </CardDescription>
                 </div>
                 <Button
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => {
-                    setFormData({ name: "", type: "storage", requires_box: true });
+                    setFormData({ name: "", type: "storage", purpose: "product", requires_box: true });
                     setLocationDialog({ open: true, mode: "create" });
                   }}
                 >
@@ -725,95 +827,63 @@ export function SettingsPage() {
               </div>
             </CardHeader>
             <CardContent className="pt-0">
-              <DataTable
-                data={locations}
-                searchKey="name"
-                searchPlaceholder="Buscar local..."
-                emptyMessage="Nenhum local cadastrado."
-                columns={[
-                  {
-                    key: "name",
-                    header: "Nome",
-                    render: (item) => (
-                      <div className="flex items-center gap-2">
-                        <MapPin className="w-3.5 h-3.5 text-muted-foreground" />
-                        <span className="font-medium">{item.name}</span>
-                        {item.system_key && (
-                          <Badge variant="outline" className="text-[10px] font-normal">Sistema</Badge>
-                        )}
-                      </div>
-                    ),
-                  },
-                  {
-                    key: "type",
-                    header: "Tipo",
-                    width: "w-32",
-                    render: (item) => (
-                      <Badge variant="secondary" className="text-xs font-normal">
-                        {getTypeLabel(locationTypes, item.type)}
-                      </Badge>
-                    ),
-                  },
-                  {
-                    key: "requires_box",
-                    header: "Estoque",
-                    width: "w-28",
-                    render: (item) => (
-                      <span className="text-xs text-muted-foreground">
-                        {item.requires_box === false ? "Solto" : "Em caixa"}
-                      </span>
-                    ),
-                  },
-                  {
-                    key: "is_active",
-                    header: "Status",
-                    width: "w-24",
-                    render: (item) => (
-                      <Badge variant={item.is_active ? "default" : "outline"} className="text-xs font-normal">
-                        {item.is_active ? "Ativo" : "Inativo"}
-                      </Badge>
-                    ),
-                  },
-                ]}
-                actions={(item) => (
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() => openEditLocation(item)}
-                      title="Editar"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      onClick={() => {
-                        setFormData({
-                          name: item.name + " (cópia)",
-                          type: item.type,
-                          requires_box: item.requires_box !== false,
-                        });
-                        setLocationDialog({ open: true, mode: "create" });
-                      }}
-                      title="Duplicar"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-destructive hover:text-destructive"
-                      disabled={Boolean(item.system_key)}
-                      onClick={() => setDeleteDialog({ open: true, type: "location", item })}
-                      title={item.system_key ? "Local do sistema" : "Excluir"}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                )}
+              <LocationCadastroTable
+                rows={productLocations}
+                locationTypes={locationTypes}
+                emptyMessage="Nenhum local de produto cadastrado."
+                onEdit={openEditLocation}
+                onDuplicate={(item) => {
+                  setFormData({
+                    name: item.name + " (cópia)",
+                    type: item.type,
+                    purpose: "product",
+                    requires_box: item.requires_box !== false,
+                  });
+                  setLocationDialog({ open: true, mode: "create" });
+                }}
+                onDelete={(item) => setDeleteDialog({ open: true, type: "location", item })}
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base font-medium">Ativos, uniformes e caixas</CardTitle>
+                  <CardDescription className="text-xs">
+                    Pátio e áreas do fluxo de equipamentos, uniformes e embalagens vai-vem. Fábrica, área suja e área limpa são reservadas. Crie outros locais conforme o pátio.
+                  </CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => {
+                    setFormData({ name: "", type: "other", purpose: "asset", requires_box: false });
+                    setLocationDialog({ open: true, mode: "create" });
+                  }}
+                >
+                  <Plus className="w-3.5 h-3.5 mr-1" />
+                  Novo local
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <LocationCadastroTable
+                rows={assetLocations}
+                locationTypes={locationTypes}
+                emptyMessage="Nenhum local de ativos cadastrado."
+                onEdit={openEditLocation}
+                onDuplicate={(item) => {
+                  setFormData({
+                    name: item.name + " (cópia)",
+                    type: item.type,
+                    purpose: "asset",
+                    requires_box: false,
+                  });
+                  setLocationDialog({ open: true, mode: "create" });
+                }}
+                onDelete={(item) => setDeleteDialog({ open: true, type: "location", item })}
               />
             </CardContent>
           </Card>
@@ -1512,12 +1582,16 @@ export function SettingsPage() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-lg">
-              {locationDialog.mode === "create" ? "Novo Local de Estoque" : "Editar Local"}
+              {locationDialog.mode === "create"
+                ? formData.purpose === "asset"
+                  ? "Novo local de ativos"
+                  : "Novo local de produtos"
+                : "Editar local"}
             </DialogTitle>
             <DialogDescription className="text-sm">
-              {locationDialog.mode === "create"
-                ? "Adicione um novo local para armazenar produtos."
-                : "Atualize as informações do local."}
+              {formData.purpose === "asset"
+                ? "Este local aparece no pátio de ativos, uniformes e caixas."
+                : "Este local aparece no estoque de produtos e produtos montados."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -1527,7 +1601,7 @@ export function SettingsPage() {
                 id="name"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="Ex: Freezer Principal"
+                placeholder={formData.purpose === "asset" ? "Ex: Oficina, quarentena, pátio 2" : "Ex: Freezer Principal"}
                 className="h-9"
               />
             </div>
@@ -1544,6 +1618,7 @@ export function SettingsPage() {
                 createPlaceholder="Novo tipo..."
               />
             </div>
+            {formData.purpose !== "asset" && (
             <label className="flex items-start gap-2 text-sm">
               <input
                 type="checkbox"
@@ -1558,6 +1633,7 @@ export function SettingsPage() {
                 </span>
               </span>
             </label>
+            )}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setLocationDialog({ open: false, mode: "create" })} className="h-9">

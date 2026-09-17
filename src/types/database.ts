@@ -99,6 +99,7 @@ export interface Location {
   id: string;
   name: string;
   type: 'receiving' | 'storage' | 'freezer' | 'shipping' | 'other';
+  purpose: 'product' | 'asset';
   is_active: boolean;
   sort_order: number;
   requires_box: boolean;

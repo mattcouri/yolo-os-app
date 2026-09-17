@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { returnAssetYardLocations } from "@/lib/locations";
 import {
   cleanLocation,
   dirtyLocation,
@@ -54,16 +55,11 @@ export function CloseOrderWizard({
 
   const dirty = dirtyLocation(locations);
   const clean = cleanLocation(locations);
-  const yardLocations = useMemo(() => {
-    const rest = locations.filter(
-      (location) => location.is_active && location.id !== dirty?.id && location.id !== clean?.id
-    );
-    return [...(dirty ? [dirty] : []), ...(clean ? [clean] : []), ...rest];
-  }, [locations, dirty, clean]);
+  const yardLocations = useMemo(() => returnAssetYardLocations(locations), [locations]);
 
   useEffect(() => {
     if (!record) return;
-    const defaultOk = clean?.id || locations.find((location) => location.is_active)?.id || null;
+    const defaultOk = clean?.id || yardLocations[0]?.id || null;
     const next = expandReturnUnits(record.items).map((row) => ({
       item_id: row.item.id,
       unit_index: row.unitIndex,

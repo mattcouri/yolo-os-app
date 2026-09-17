@@ -63,10 +63,10 @@ export function OperationsLayout({
             {showBack ? (
               <Link
                 to={backTo}
-                className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+                className="inline-flex min-h-11 items-center gap-2 rounded-md px-1 text-sm text-muted-foreground hover:text-foreground"
               >
-                <ArrowLeft className="w-4 h-4" />
-                <span className="hidden sm:inline">{backLabel}</span>
+                <ArrowLeft className="h-4 w-4 shrink-0" />
+                <span>{backLabel}</span>
               </Link>
             ) : (
               <Link to="/" className="flex items-center gap-2">

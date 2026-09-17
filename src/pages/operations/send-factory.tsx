@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { BOX_TYPE_LABEL, canSendToFactory, isBoxAsset } from "@/lib/packaging-board";
+import { factoryLocation } from "@/lib/operational-assets";
 import { useAppStore } from "@/stores";
 import type { Asset } from "@/types/database";
 
@@ -29,7 +30,10 @@ export function SendFactoryPage() {
   const selected = selectedIds
     .map((id) => assets.find((asset) => asset.id === id))
     .filter((asset): asset is Asset => Boolean(asset));
-  const atFactory = assets.filter((asset) => isBoxAsset(asset) && asset.status === "at_factory").length;
+  const factory = factoryLocation(locations);
+  const atFactory = assets.filter(
+    (asset) => isBoxAsset(asset) && (asset.status === "at_factory" || asset.location_id === factory?.id)
+  ).length;
 
   const addAsset = (asset: Asset) => {
     if (selectedIds.includes(asset.id)) {
@@ -76,8 +80,8 @@ export function SendFactoryPage() {
         <p className="text-sm font-semibold text-primary tracking-wider uppercase">Movimentar</p>
         <h1 className="text-3xl font-bold tracking-tight mt-1">Enviar à fábrica</h1>
         <p className="text-muted-foreground mt-1">
-          Caixas pretas e grandes vazias voltam para reabastecer. Não crie um estoque “Fábrica” —
-          o produto só entra de novo no Receber, com a nota fiscal.
+          Caixas pretas e grandes vazias voltam para o local reservado Fábrica.
+          O produto só entra de novo no Receber, com a nota fiscal.
         </p>
       </div>
 

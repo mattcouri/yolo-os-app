@@ -1,11 +1,12 @@
 import { useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, CheckCircle2, Package2, QrCode, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ArrowLeftRight, CheckCircle2, Package2, QrCode, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { productStockLocations } from "@/lib/locations";
 import {
   boxCapacity,
   findAssemblyBox,
@@ -44,14 +45,6 @@ type MovableBox = {
 export function TransfersPage() {
   return (
     <div className="max-w-4xl mx-auto pb-12">
-      <Link
-        to="/operacoes/movimentar"
-        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mt-6"
-      >
-        <ArrowRight className="w-4 h-4 rotate-180" />
-        Movimentar
-      </Link>
-
       <div className="py-6">
         <span className="text-xs font-semibold text-primary tracking-wider uppercase">
           03 / MOVIMENTAR
@@ -98,7 +91,6 @@ export function TransfersPage() {
 }
 
 export function BatchTransferPage() {
-  const navigate = useNavigate();
   const {
     stock,
     locations,
@@ -110,7 +102,7 @@ export function BatchTransferPage() {
   } = useAppStore();
 
   const activeLocations = useMemo(
-    () => [...locations].filter((location) => location.is_active).sort((a, b) => a.sort_order - b.sort_order),
+    () => productStockLocations(locations, true),
     [locations]
   );
 
@@ -474,14 +466,9 @@ export function BatchTransferPage() {
       {error && <p className="text-sm text-destructive">{error}</p>}
       {done && <p className="text-sm text-emerald-700">{done}</p>}
 
-      <div className="flex items-center gap-3">
-        <Button type="button" variant="outline" onClick={() => navigate("/operacoes/movimentar")}>
-          Voltar
-        </Button>
-        <Button type="submit" disabled={saving || selected.length === 0 || !destination}>
-          {saving ? "Transferindo…" : "Confirmar transferência"}
-        </Button>
-      </div>
+      <Button type="submit" disabled={saving || selected.length === 0 || !destination}>
+        {saving ? "Transferindo…" : "Confirmar transferência"}
+      </Button>
     </form>
 
       <Card>

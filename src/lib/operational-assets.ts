@@ -104,6 +104,7 @@ export function statusLabel(status: string) {
 
 export const ASSET_DIRTY_SYSTEM_KEY = "asset_dirty";
 export const ASSET_CLEAN_SYSTEM_KEY = "asset_clean";
+export const ASSET_FACTORY_SYSTEM_KEY = "asset_factory";
 
 export const EXCEPTION_ASSET_STATUSES: AssetStatus[] = [
   "damaged",
@@ -120,6 +121,10 @@ export function cleanLocation(locations: Location[]) {
   return locations.find((location) => location.system_key === ASSET_CLEAN_SYSTEM_KEY);
 }
 
+export function factoryLocation(locations: Location[]) {
+  return locations.find((location) => location.system_key === ASSET_FACTORY_SYSTEM_KEY);
+}
+
 export function planAssetPlacement(
   asset: Pick<Asset, "status" | "location_id">,
   change: { status?: AssetStatus; locationId?: string | null },
@@ -128,6 +133,7 @@ export function planAssetPlacement(
 ): { status: AssetStatus; location_id: string | null; error?: string } {
   const dirty = dirtyLocation(locations);
   const clean = cleanLocation(locations);
+  const factory = factoryLocation(locations);
   let status = change.status ?? asset.status;
   let location_id = change.locationId !== undefined ? change.locationId : asset.location_id;
   const keepsException =
@@ -136,12 +142,14 @@ export function planAssetPlacement(
   if (change.locationId !== undefined && !keepsException) {
     if (dirty && change.locationId === dirty.id) status = "cleaning";
     if (clean && change.locationId === clean.id) status = "available";
+    if (factory && change.locationId === factory.id) status = "at_factory";
   }
 
   if (change.status !== undefined) {
     status = change.status;
     if (status === "cleaning" && dirty) location_id = dirty.id;
     if (status === "available" && clean) location_id = clean.id;
+    if (status === "at_factory" && factory) location_id = factory.id;
   }
 
   if (status === "available" && hasActiveReservation) {

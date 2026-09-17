@@ -16,9 +16,11 @@ import {
   columnLabel,
   daysAging,
   isBoxAsset,
+  isFactoryColumn,
   lastActivityAt,
   type BoxType,
 } from "@/lib/packaging-board";
+import { factoryLocation } from "@/lib/operational-assets";
 import { useAppStore } from "@/stores";
 import type { Asset, Location, Movement, Product, Stock } from "@/types/database";
 
@@ -89,7 +91,7 @@ function buildRows(
     .map((asset) => {
       const contents = boxContents(asset, stock, products);
       const lastMoveAt = lastActivityAt(asset, movements);
-      const columnId = boxColumnId(asset);
+      const columnId = boxColumnId(asset, locations);
       const locationName = columnLabel(columnId, locations);
       const grades = contents.grades.map((grade) => GRADE_LABEL[grade || ""] || grade).join(", ");
       const fillLabel = contents.full
@@ -119,12 +121,14 @@ function buildRows(
 
 function kanbanColumns(locations: Location[], rows: BoxRow[]) {
   const used = new Set(rows.map((row) => row.columnId));
-  const extras = [FACTORY_COLUMN, TRANSIT_COLUMN, UNLOCATED_COLUMN].filter((id) => used.has(id));
+  const factory = factoryLocation(locations);
+  const factoryCol = factory?.id || FACTORY_COLUMN;
+  const extras = [TRANSIT_COLUMN, UNLOCATED_COLUMN].filter((id) => used.has(id));
   const place = locations
-    .filter((location) => location.is_active)
+    .filter((location) => location.is_active && location.id !== factory?.id)
     .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "pt-BR"))
     .map((location) => location.id);
-  return [...extras.filter((id) => id === FACTORY_COLUMN), ...place, ...extras.filter((id) => id !== FACTORY_COLUMN)];
+  return [factoryCol, ...place, ...extras];
 }
 
 export function PackagingPage() {
@@ -141,7 +145,7 @@ export function PackagingPage() {
 
   const countByType = (type: BoxType) => rows.filter((row) => row.type === type).length;
   const fullCount = rows.filter((row) => row.full).length;
-  const factoryCount = rows.filter((row) => row.columnId === FACTORY_COLUMN).length;
+  const factoryCount = rows.filter((row) => isFactoryColumn(row.columnId, locations)).length;
 
   return (
     <div className="space-y-6">

@@ -31,14 +31,6 @@ function ModuleCard({ title, description, icon, to, status }: ModuleCardProps) {
 export function OrdersPage() {
   return (
     <div className="max-w-5xl mx-auto">
-      <Link
-        to="/operations"
-        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mt-6"
-      >
-        <ArrowRight className="w-4 h-4 rotate-180" />
-        Todos os módulos
-      </Link>
-
       <div className="py-8 md:py-14">
         <span className="text-xs font-semibold text-primary tracking-wider uppercase">
           PEDIDOS

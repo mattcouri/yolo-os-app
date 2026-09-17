@@ -39,6 +39,7 @@ import {
   warrantyStatus,
   isOperationalAsset,
 } from "@/lib/operational-assets";
+import { orderedAssetYardLocations } from "@/lib/locations";
 import { useAppStore } from "@/stores";
 import type {
   Asset,
@@ -697,7 +698,7 @@ export function AtivosPanel() {
                   onChange={(e) => setField("location_id", e.target.value)}
                 >
                   <option value="">Sem local</option>
-                  {locations.map((l) => (
+                  {orderedAssetYardLocations(locations).map((l) => (
                     <option key={l.id} value={l.id}>{l.name}</option>
                   ))}
                 </select>

@@ -367,6 +367,11 @@ export function isClosed(job: SeparationJob) {
   return job.stage === "retorno";
 }
 
+export function isClosedOrder(order: Order, job?: SeparationJob | null) {
+  if (order.status === "retorno" || order.status === "completed") return true;
+  return Boolean(job && isClosed(job));
+}
+
 export function needsCloseOut(order: Order, job: SeparationJob) {
   if (!isScheduled(job)) return false;
   const end = orderEnd(order);

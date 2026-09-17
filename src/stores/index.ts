@@ -1,8 +1,11 @@
 import { create } from 'zustand';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { locationPurpose } from '@/lib/locations';
 import {
   ASSET_CLEAN_SYSTEM_KEY,
   ASSET_DIRTY_SYSTEM_KEY,
+  ASSET_FACTORY_SYSTEM_KEY,
+  factoryLocation,
   getBoxUnitCapacity,
   suggestedAssetCode,
 } from '@/lib/operational-assets';
@@ -391,15 +394,16 @@ const normalizeAssetCode = (code: string) =>
   code.trim().toUpperCase().replace(/[\s_-]+/g, '-');
 
 const defaultLocations: Location[] = [
-  { id: '1', name: 'Recebimento', type: 'receiving', is_active: true, sort_order: 0, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '2', name: 'Resfriado', type: 'storage', is_active: true, sort_order: 1, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '3', name: 'Congelado', type: 'freezer', is_active: true, sort_order: 2, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '4', name: 'Estoque seco', type: 'storage', is_active: true, sort_order: 3, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '5', name: 'Freezer cozinha', type: 'freezer', is_active: true, sort_order: 4, requires_box: false, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '6', name: 'Expedição', type: 'shipping', is_active: true, sort_order: 5, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '7', name: 'Produtos montados', type: 'storage', is_active: true, sort_order: 90, requires_box: false, system_key: ASSEMBLED_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '8', name: 'Área suja', type: 'other', is_active: true, sort_order: 100, requires_box: false, system_key: ASSET_DIRTY_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '9', name: 'Área limpa', type: 'other', is_active: true, sort_order: 101, requires_box: false, system_key: ASSET_CLEAN_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '1', name: 'Recebimento', type: 'receiving', purpose: 'product', is_active: true, sort_order: 0, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '2', name: 'Resfriado', type: 'storage', purpose: 'product', is_active: true, sort_order: 1, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '3', name: 'Congelado', type: 'freezer', purpose: 'product', is_active: true, sort_order: 2, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '4', name: 'Estoque seco', type: 'storage', purpose: 'product', is_active: true, sort_order: 3, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '5', name: 'Freezer cozinha', type: 'freezer', purpose: 'product', is_active: true, sort_order: 4, requires_box: false, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '6', name: 'Expedição', type: 'shipping', purpose: 'product', is_active: true, sort_order: 5, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '7', name: 'Produtos montados', type: 'storage', purpose: 'product', is_active: true, sort_order: 90, requires_box: false, system_key: ASSEMBLED_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '8', name: 'Área suja', type: 'other', purpose: 'asset', is_active: true, sort_order: 100, requires_box: false, system_key: ASSET_DIRTY_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '9', name: 'Área limpa', type: 'other', purpose: 'asset', is_active: true, sort_order: 101, requires_box: false, system_key: ASSET_CLEAN_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '10', name: 'Fábrica', type: 'other', purpose: 'asset', is_active: true, sort_order: 102, requires_box: false, system_key: ASSET_FACTORY_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
 ];
 
 const defaultProducts: Product[] = [
@@ -431,7 +435,7 @@ const defaultAssets: Asset[] = [
     code: `PRETA-${String(i + 1).padStart(3, '0')}`,
     name: `Caixa preta ${i + 1}`,
     type: 'caixa_preta' as const,
-    location_id: null,
+    location_id: '10',
     status: 'at_factory' as const,
     is_active: true,
     created_at: new Date().toISOString(),
@@ -510,6 +514,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...location,
           requires_box: location.requires_box !== false,
           system_key: location.system_key ?? null,
+          purpose: locationPurpose(location),
         })),
         isLoading: false,
       });
@@ -548,11 +553,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   createLocation: async (data) => {
     const now = new Date().toISOString();
+    const purpose = data.purpose === 'asset' ? 'asset' : 'product';
     const newLocation: Location = {
       id: generateId(),
       ...data,
+      purpose,
       system_key: data.system_key ?? null,
-      requires_box: data.requires_box !== false,
+      requires_box: purpose === 'asset' ? false : data.requires_box !== false,
       created_at: now,
       updated_at: now,
     };
@@ -743,13 +750,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   ensureAssembledLocation: async () => {
     const existing = assembledLocation(get().locations);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.purpose !== 'product') {
+        await get().updateLocation(existing.id, { purpose: 'product' });
+      }
+      return get().locations.find((location) => location.id === existing.id) || existing;
+    }
     const byName = get().locations.find(
       (location) => location.name.toLowerCase() === 'produtos montados'
     );
     if (byName) {
       await get().updateLocation(byName.id, {
         system_key: ASSEMBLED_SYSTEM_KEY,
+        purpose: 'product',
         requires_box: false,
         is_active: true,
       });
@@ -758,6 +771,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return get().createLocation({
       name: 'Produtos montados',
       type: 'storage',
+      purpose: 'product',
       is_active: true,
       sort_order: 90,
       requires_box: false,
@@ -769,16 +783,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     const yards = [
       { key: ASSET_DIRTY_SYSTEM_KEY, name: 'Área suja', aliases: ['área suja', 'area suja'], sort_order: 100 },
       { key: ASSET_CLEAN_SYSTEM_KEY, name: 'Área limpa', aliases: ['área limpa', 'area limpa'], sort_order: 101 },
+      { key: ASSET_FACTORY_SYSTEM_KEY, name: 'Fábrica', aliases: ['fábrica', 'fabrica'], sort_order: 102 },
     ] as const;
     for (const yard of yards) {
       const existing = get().locations.find((location) => location.system_key === yard.key);
-      if (existing) continue;
+      if (existing) {
+        if (existing.purpose !== 'asset') {
+          await get().updateLocation(existing.id, { purpose: 'asset' });
+        }
+        continue;
+      }
       const byName = get().locations.find((location) =>
         (yard.aliases as readonly string[]).includes(location.name.trim().toLowerCase())
       );
       if (byName) {
         await get().updateLocation(byName.id, {
           system_key: yard.key,
+          purpose: 'asset',
           requires_box: false,
           is_active: true,
         });
@@ -787,6 +808,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().createLocation({
         name: yard.name,
         type: 'other',
+        purpose: 'asset',
         is_active: true,
         sort_order: yard.sort_order,
         requires_box: false,
@@ -3437,10 +3459,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   sendBoxesToFactory: async (assetIds) => {
+    await get().ensureAssetYardLocations();
     const state = get();
     const now = new Date().toISOString();
     const uniqueIds = [...new Set(assetIds)];
     if (uniqueIds.length === 0) throw new Error('Escaneie ao menos uma caixa vazia.');
+    const factory = factoryLocation(state.locations);
+    if (!factory) throw new Error('Local Fábrica não está cadastrado.');
 
     const selected = uniqueIds.map((id) => {
       const asset = state.assets.find((item) => item.id === id);
@@ -3461,7 +3486,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       inspection_id: null,
       inventory_count_id: null,
       from_location_id: asset.location_id,
-      to_location_id: null,
+      to_location_id: factory.id,
       quantity: null,
       quantity_before: 0,
       quantity_after: 0,
@@ -3474,7 +3499,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (isSupabaseConfigured && supabase) {
       const { error: assetError } = await supabase
         .from('assets')
-        .update({ status: 'at_factory', location_id: null, last_moved_at: now, updated_at: now })
+        .update({ status: 'at_factory', location_id: factory.id, last_moved_at: now, updated_at: now })
         .in('id', uniqueIds);
       if (assetError) throw new Error(assetError.message);
       const { error: movementError } = await supabase.from('movements').insert(movements);
@@ -3484,7 +3509,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((current) => ({
       assets: current.assets.map((asset) =>
         uniqueIds.includes(asset.id)
-          ? { ...asset, status: 'at_factory' as const, location_id: null, last_moved_at: now, updated_at: now }
+          ? { ...asset, status: 'at_factory' as const, location_id: factory.id, last_moved_at: now, updated_at: now }
           : asset
       ),
       movements: [...movements, ...current.movements],

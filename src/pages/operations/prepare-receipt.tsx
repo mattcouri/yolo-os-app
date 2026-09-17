@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertCircle, ArrowRight, CheckCircle2, Plus, QrCode, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Plus, QrCode, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,6 +22,7 @@ import {
   varianceQuantity,
 } from "@/lib/receipt-progress";
 import { inferPrepareMode, locationRequiresBox } from "@/lib/stock-placement";
+import { productStockLocations } from "@/lib/locations";
 import { useAppStore } from "@/stores";
 import { Textarea } from "@/components/ui/textarea";
 import type { Asset, Location, MaterialStock, Product, ReceiptItem, Stock } from "@/types/database";
@@ -172,14 +173,6 @@ export function PrepareReceiptPage() {
 
   return (
     <div className="max-w-3xl mx-auto pb-12">
-      <Link
-        to="/operacoes/preparar"
-        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mt-6"
-      >
-        <ArrowRight className="w-4 h-4 rotate-180" />
-        Notas em recebimento
-      </Link>
-
       <div className="py-6">
         <span className="text-xs font-semibold text-primary tracking-wider uppercase">Preparar</span>
         <h1 className="text-2xl md:text-3xl font-bold mt-2">NF {receipt.nf_number}</h1>
@@ -471,6 +464,7 @@ function PrepareBatchDialog({
   onSaved: () => void;
 }) {
   const { locations, assets, stock, materialStock, receiptItems, createPrepareBatch } = useAppStore();
+  const productLocations = useMemo(() => productStockLocations(locations, true), [locations]);
 
   const [quantities, setQuantities] = useState<Record<GradeKey, string>>({
     AAA: "",
@@ -698,7 +692,7 @@ function PrepareBatchDialog({
                           }
                         }}
                       >
-                        {locations.filter((loc) => loc.is_active).map((loc) => (
+                        {productLocations.map((loc) => (
                           <option key={loc.id} value={loc.id}>
                             {loc.name}{locationRequiresBox(loc) ? "" : " · solto"}
                           </option>
@@ -790,7 +784,7 @@ function PrepareBatchDialog({
                     value={destMaterial}
                     onChange={(e) => setDestMaterial(e.target.value)}
                   >
-                    {locations.map((loc) => (
+                    {productLocations.map((loc) => (
                       <option key={loc.id} value={loc.id}>{loc.name}</option>
                     ))}
                   </select>

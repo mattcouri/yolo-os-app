@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowRight, CheckSquare, Printer, Square } from "lucide-react";
+import { CheckSquare, Printer, Square } from "lucide-react";
 import { StageTag, sheetStageTag } from "@/components/separacao/stage-tag";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -489,14 +489,6 @@ export function SeparationJobPage() {
 
   return (
     <div className="mx-auto max-w-3xl pb-16 md:max-w-5xl print:max-w-none print:pb-0">
-      <Link
-        to="/separacao"
-        className="mt-4 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground print:hidden"
-      >
-        <ArrowRight className="h-4 w-4 rotate-180" />
-        Separação
-      </Link>
-
       <article className="mt-4 rounded-2xl border bg-card p-5 print:mt-0 print:bg-white print:p-4">
         <header className="flex items-start justify-between gap-4 border-b pb-4 print:pb-3">
           <div>
@@ -738,15 +730,13 @@ export function SeparationJobPage() {
         </p>
       )}
 
-      <div className="mt-5 flex flex-wrap items-center justify-end gap-2 print:hidden">
-        <Button type="button" variant="outline" onClick={() => navigate("/separacao")}>
-          Voltar
-        </Button>
-        {!closed && queued && (
-          <Button type="button" disabled={isSaving} onClick={() => void handleConfirm()}>
-            {isSaving ? "Confirmando…" : "OK · programar"}
-          </Button>
-        )}
+      {!closed && (queued || programmed || inProgress) && (
+        <div className="mt-5 flex flex-wrap items-center justify-end gap-2 print:hidden">
+          {!closed && queued && (
+            <Button type="button" disabled={isSaving} onClick={() => void handleConfirm()}>
+              {isSaving ? "Confirmando…" : "OK · programar"}
+            </Button>
+          )}
         {!closed && programmed && (
           <Button type="button" variant="outline" disabled={isSaving} onClick={() => void handleSaveNotes()}>
             {isSaving ? "Salvando…" : "Salvar anotações"}
@@ -763,7 +753,8 @@ export function SeparationJobPage() {
             {isSaving ? "Salvando…" : "Salvar e Imprimir"}
           </Button>
         )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

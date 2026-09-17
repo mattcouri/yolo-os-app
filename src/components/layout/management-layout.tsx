@@ -14,7 +14,7 @@ import {
   Settings,
   History,
   LayoutDashboard,
-  BarChart3,
+  ClipboardList,
   Users,
   Grid3X3,
   Wrench,
@@ -31,7 +31,7 @@ const navItems = [
   { icon: Wrench, label: "Ativos", path: "/gestao/ativos" },
   { icon: Settings, label: "Cadastros", path: "/gestao/settings" },
   { icon: History, label: "Movimentações", path: "/gestao/movements" },
-  { icon: BarChart3, label: "Relatórios", path: "/gestao/reports" },
+  { icon: ClipboardList, label: "Histórico de Pedidos", path: "/gestao/reports" },
   { icon: Users, label: "Usuários", path: "/gestao/users" },
 ];
 

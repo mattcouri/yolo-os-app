@@ -1,24 +1,27 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ExternalLink, Wrench } from "lucide-react";
+import { ExternalLink, Package, Shirt, Wrench } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/ui/data-table";
+import { orderedAssetYardLocations } from "@/lib/locations";
 import {
   categoryLabel,
-  cleanLocation,
-  dirtyLocation,
-  isOperationalAsset,
+  isBoxAsset,
   OPERATIONAL_STATUSES,
   planAssetPlacement,
   statusLabel,
 } from "@/lib/operational-assets";
+import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores";
-import type { Asset, AssetStatus } from "@/types/database";
+import type { Asset, AssetStatus, Location } from "@/types/database";
 
 const selectClass =
   "h-8 w-full max-w-[14rem] rounded-md border border-input bg-background px-2 text-xs";
+
+const STREET_COLUMN = "__street__";
+const UNLOCATED_COLUMN = "__none__";
 
 type FilterId = "all" | "ready" | "dirty" | "out" | "pending" | "exception";
 
@@ -42,15 +45,143 @@ function matchesFilter(status: AssetStatus, filter: FilterId) {
   return EXCEPTION_STATUSES.has(status);
 }
 
+function statusChipClass(status: AssetStatus) {
+  if (status === "available" || status === "empty_ready_return") {
+    return "border-emerald-400/45 bg-emerald-500/15 text-emerald-900 dark:text-emerald-200";
+  }
+  if (status === "cleaning" || status === "maintenance") {
+    return "border-amber-400/50 bg-amber-500/15 text-amber-900 dark:text-amber-200";
+  }
+  if (status === "with_product" || status === "at_factory") {
+    return "border-sky-400/45 bg-sky-500/15 text-sky-900 dark:text-sky-200";
+  }
+  if (OUT_STATUSES.has(status)) {
+    return "border-sky-400/45 bg-sky-500/15 text-sky-900 dark:text-sky-200";
+  }
+  if (PENDING_STATUSES.has(status)) {
+    return "border-violet-400/45 bg-violet-500/15 text-violet-900 dark:text-violet-200";
+  }
+  if (EXCEPTION_STATUSES.has(status)) {
+    return "border-rose-400/45 bg-rose-500/15 text-rose-900 dark:text-rose-200";
+  }
+  return "border-border bg-muted text-muted-foreground";
+}
+
+function displayStatus(asset: Pick<Asset, "status" | "type">) {
+  if (isBoxAsset(asset)) {
+    const labels: Partial<Record<AssetStatus, string>> = {
+      available: "Vazia",
+      cleaning: "Limpeza",
+      empty_ready_return: "Pronta p/ fábrica",
+      at_factory: "Na fábrica",
+      in_transit: "Em trânsito",
+      with_product: "Cheia",
+      in_use: "Em uso",
+      inspection: "Inspeção",
+      damaged: "Danificada",
+    };
+    return labels[asset.status] || statusLabel(asset.status);
+  }
+  return statusLabel(asset.status);
+}
+
 type PatioRow = Asset & {
   locationName: string;
   categoryLabel: string;
   statusLabel: string;
   search: string;
   orderLabel: string;
-  kind: "equipamento" | "uniforme";
+  kind: "equipamento" | "uniforme" | "caixa";
   editable: boolean;
 };
+
+function boardColumnId(row: Pick<PatioRow, "location_id" | "status">) {
+  if (row.location_id) return row.location_id;
+  if (OUT_STATUSES.has(row.status)) return STREET_COLUMN;
+  return UNLOCATED_COLUMN;
+}
+
+function boardColumns(yardLocations: Location[], rows: PatioRow[]) {
+  const used = new Set(rows.map(boardColumnId));
+  const extras = [STREET_COLUMN];
+  if (used.has(UNLOCATED_COLUMN)) extras.push(UNLOCATED_COLUMN);
+  return [...yardLocations.map((location) => location.id), ...extras];
+}
+
+function columnTitle(columnId: string, yardLocations: Location[]) {
+  if (columnId === STREET_COLUMN) return "Na rua";
+  if (columnId === UNLOCATED_COLUMN) return "Sem local";
+  return yardLocations.find((location) => location.id === columnId)?.name || "Local";
+}
+
+function boxTypeLabel(type: Asset["type"]) {
+  if (type === "caixa_preta") return "Caixa preta";
+  if (type === "caixa_media") return "Caixa média";
+  if (type === "caixa_grande") return "Caixa grande";
+  return "Caixa";
+}
+
+function patioKind(asset: Pick<Asset, "type" | "category">): PatioRow["kind"] {
+  if (isBoxAsset(asset)) return "caixa";
+  if (asset.category === "uniforme") return "uniforme";
+  return "equipamento";
+}
+
+function patioCategory(asset: Pick<Asset, "type" | "category">) {
+  if (isBoxAsset(asset)) return boxTypeLabel(asset.type);
+  return categoryLabel(asset.category || asset.type);
+}
+
+function PatioCard({ row }: { row: PatioRow }) {
+  const photo = row.photo_url;
+  const Placeholder = row.kind === "uniforme" ? Shirt : row.kind === "caixa" ? Package : Wrench;
+  const body = (
+    <>
+      <div className="relative aspect-[4/3] overflow-hidden bg-muted">
+        {photo ? (
+          <img src={photo} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center">
+            <Placeholder className="h-8 w-8 text-muted-foreground/70" />
+          </div>
+        )}
+        <span
+          className={cn(
+            "absolute right-1.5 top-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-md border px-1.5 py-0.5 text-[10px] font-semibold leading-tight",
+            statusChipClass(row.status)
+          )}
+        >
+          {row.statusLabel}
+        </span>
+      </div>
+      <div className="space-y-0.5 p-2.5">
+        <p className="truncate text-sm font-medium leading-tight">{row.name}</p>
+        <p className="truncate font-mono text-[11px] text-muted-foreground">{row.code}</p>
+        <div className="flex items-center justify-between gap-2 pt-0.5">
+          <Badge variant="outline" className="h-5 max-w-[70%] truncate text-[10px] font-normal">
+            {row.categoryLabel}
+          </Badge>
+          {row.orderLabel ? (
+            <span className="truncate text-[10px] font-medium text-muted-foreground">{row.orderLabel}</span>
+          ) : null}
+        </div>
+      </div>
+    </>
+  );
+
+  const className =
+    "block overflow-hidden rounded-xl border bg-card text-left shadow-sm transition hover:border-primary/40 hover:shadow-md";
+
+  if (row.editable) {
+    return (
+      <Link to={`/gestao/ativos/${row.id}`} className={className}>
+        {body}
+      </Link>
+    );
+  }
+
+  return <div className={className}>{body}</div>;
+}
 
 export function AtivosPage() {
   const {
@@ -67,20 +198,10 @@ export function AtivosPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const dirty = dirtyLocation(locations);
-  const clean = cleanLocation(locations);
-  const yardLocations = useMemo(() => {
-    const rest = locations.filter(
-      (location) =>
-        location.is_active &&
-        location.id !== dirty?.id &&
-        location.id !== clean?.id
-    );
-    return [...(dirty ? [dirty] : []), ...(clean ? [clean] : []), ...rest];
-  }, [locations, dirty, clean]);
+  const yardLocations = useMemo(() => orderedAssetYardLocations(locations), [locations]);
 
   const operational = useMemo(
-    () => assets.filter((asset) => asset.is_active !== false && isOperationalAsset(asset)),
+    () => assets.filter((asset) => asset.is_active !== false),
     [assets]
   );
 
@@ -96,7 +217,8 @@ export function AtivosPage() {
   const patio = useMemo<PatioRow[]>(() => {
     const equipment: PatioRow[] = operational.map((asset) => {
       const locationName = locations.find((location) => location.id === asset.location_id)?.name || "—";
-      const category = categoryLabel(asset.category || asset.type);
+      const category = patioCategory(asset);
+      const kind = patioKind(asset);
       const reservation = reservationByAsset.get(asset.id);
       const order = reservation?.orderId
         ? orders.find((item) => item.id === reservation.orderId)
@@ -112,11 +234,11 @@ export function AtivosPage() {
         ...asset,
         locationName,
         categoryLabel: category,
-        statusLabel: statusLabel(asset.status),
+        statusLabel: displayStatus(asset),
         orderLabel,
-        kind: asset.category === "uniforme" ? "uniforme" : "equipamento",
-        editable: true,
-        search: [asset.code, asset.name, category, locationName, statusLabel(asset.status), orderLabel]
+        kind,
+        editable: kind !== "caixa",
+        search: [asset.code, asset.name, category, locationName, displayStatus(asset), orderLabel]
           .join(" ")
           .toLowerCase(),
       };
@@ -147,6 +269,7 @@ export function AtivosPage() {
           updated_at: checkout.created_at,
           last_moved_at: checkout.checked_out_at,
           category: "uniforme",
+          photo_url: uniform?.photo_url || null,
           locationName: "Na rua",
           categoryLabel: "Uniforme",
           statusLabel: statusLabel("in_use"),
@@ -161,24 +284,25 @@ export function AtivosPage() {
     return [...equipment, ...uniformsOut];
   }, [operational, locations, reservationByAsset, orders, uniforms, uniformCheckouts]);
 
-  const counts = useMemo(() => {
-    const inDirty = dirty ? patio.filter((row) => row.location_id === dirty.id).length : 0;
-    const inClean = clean ? patio.filter((row) => row.location_id === clean.id).length : 0;
-    return {
-      all: patio.length,
-      ready: patio.filter((row) => row.status === "available").length,
-      dirty: patio.filter((row) => row.status === "cleaning").length,
-      out: patio.filter((row) => OUT_STATUSES.has(row.status)).length,
-      pending: patio.filter((row) => PENDING_STATUSES.has(row.status)).length,
-      exception: patio.filter((row) => EXCEPTION_STATUSES.has(row.status)).length,
-      inDirty,
-      inClean,
-    };
-  }, [patio, dirty, clean]);
+  const listPatio = useMemo(() => patio.filter((row) => row.kind !== "caixa"), [patio]);
+
+  const counts = useMemo(
+    () => ({
+      all: listPatio.length,
+      ready: listPatio.filter((row) => row.status === "available").length,
+      dirty: listPatio.filter((row) => row.status === "cleaning").length,
+      out: listPatio.filter((row) => OUT_STATUSES.has(row.status)).length,
+      pending: listPatio.filter((row) => PENDING_STATUSES.has(row.status)).length,
+      exception: listPatio.filter((row) => EXCEPTION_STATUSES.has(row.status)).length,
+    }),
+    [listPatio]
+  );
+
+  const columns = useMemo(() => boardColumns(yardLocations, patio), [yardLocations, patio]);
 
   const rows = useMemo(
-    () => patio.filter((row) => matchesFilter(row.status, filter)),
-    [patio, filter]
+    () => listPatio.filter((row) => matchesFilter(row.status, filter)),
+    [listPatio, filter]
   );
 
   const place = async (asset: PatioRow, change: { status?: AssetStatus; locationId?: string | null }) => {
@@ -233,59 +357,40 @@ export function AtivosPage() {
       <div>
         <h1 className="text-2xl font-bold">Ativos</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Status operacional e local no pátio, incluindo uniformes. Área suja = para limpar. Área limpa = pronto
-          para usar de novo. Uniformes na rua entram automaticamente; no retorno cada peça ganha status e local.
+          O que está em cada local do pátio. Área suja = para limpar. Área limpa = pronto para usar de novo. Uniformes
+          na rua entram automaticamente; no retorno cada peça ganha status e local.
         </p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Área limpa</CardTitle>
-            <Wrench className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{counts.inClean}</div>
-            <p className="text-xs text-muted-foreground">no local · prontos para sair</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Área suja</CardTitle>
-            <Wrench className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{counts.inDirty}</div>
-            <p className="text-xs text-muted-foreground">no local · aguardando limpeza</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Na rua</CardTitle>
-            <Wrench className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{counts.out}</div>
-            <p className="text-xs text-muted-foreground">reservados ou em uso</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Exceções</CardTitle>
-            <Wrench className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{counts.exception}</div>
-            <p className="text-xs text-muted-foreground">danificado, incompleto, perdido</p>
-          </CardContent>
-        </Card>
+      <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
+        {columns.map((columnId) => {
+          const cards = patio.filter((row) => boardColumnId(row) === columnId);
+          return (
+            <section
+              key={columnId}
+              className="flex w-[16.5rem] shrink-0 flex-col rounded-xl border bg-muted/30"
+            >
+              <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5">
+                <h2 className="truncate text-sm font-semibold">{columnTitle(columnId, yardLocations)}</h2>
+                <Badge variant="secondary">{cards.length}</Badge>
+              </header>
+              <div className="max-h-[28rem] space-y-2 overflow-y-auto p-2">
+                {cards.length === 0 ? (
+                  <p className="px-1 py-8 text-center text-xs text-muted-foreground">Vazio</p>
+                ) : (
+                  cards.map((row) => <PatioCard key={row.id} row={row} />)
+                )}
+              </div>
+            </section>
+          );
+        })}
       </div>
 
       <Card>
         <CardHeader className="pb-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <CardTitle className="text-base">Pátio</CardTitle>
+              <CardTitle className="text-base">Lista</CardTitle>
               <CardDescription>
                 Status e local são campos separados. Mover para Área suja marca limpeza; Área limpa marca disponível.
               </CardDescription>
