@@ -975,6 +975,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
 
     if (isSupabaseConfigured && supabase) {
+      await supabase.from('asset_attachments').delete().eq('asset_id', id);
+      await supabase.from('asset_components').delete().eq('parent_asset_id', id);
+
       const { error } = await supabase.from('assets').delete().eq('id', id);
       if (!error) {
         dropFromCatalog(true);
@@ -982,11 +985,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       const now = new Date().toISOString();
-      const { error: deactivateError } = await supabase
+      const { data: deactivated, error: deactivateError } = await supabase
         .from('assets')
         .update({ is_active: false, updated_at: now })
-        .eq('id', id);
+        .eq('id', id)
+        .select('id')
+        .maybeSingle();
       if (deactivateError) throw new Error(deactivateError.message);
+      if (!deactivated) {
+        throw new Error(error.message || 'Não foi possível excluir esta embalagem.');
+      }
       dropFromCatalog(false);
       return;
     }
@@ -3761,14 +3769,41 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   deleteUniform: async (id) => {
+    const dropFromCatalog = (hardDeleted: boolean) => {
+      const now = new Date().toISOString();
+      set((s) => ({
+        uniforms: hardDeleted
+          ? s.uniforms.filter((u) => u.id !== id)
+          : s.uniforms.map((u) => (u.id === id ? { ...u, is_active: false, updated_at: now } : u)),
+        uniformCheckouts: hardDeleted
+          ? s.uniformCheckouts.filter((c) => c.uniform_id !== id)
+          : s.uniformCheckouts,
+      }));
+    };
+
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase.from('uniforms').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      if (!error) {
+        dropFromCatalog(true);
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const { data: deactivated, error: deactivateError } = await supabase
+        .from('uniforms')
+        .update({ is_active: false, updated_at: now })
+        .eq('id', id)
+        .select('id')
+        .maybeSingle();
+      if (deactivateError) throw new Error(deactivateError.message);
+      if (!deactivated) {
+        throw new Error(error.message || 'Não foi possível excluir este uniforme.');
+      }
+      dropFromCatalog(false);
+      return;
     }
-    set((s) => ({
-      uniforms: s.uniforms.filter((u) => u.id !== id),
-      uniformCheckouts: s.uniformCheckouts.filter((c) => c.uniform_id !== id),
-    }));
+
+    dropFromCatalog(true);
   },
 
   checkoutUniforms: async (orderId, lines) => {

@@ -73,6 +73,7 @@ function PhotoSlot({
 
 export function UniformesPanel() {
   const { uniforms, uniformCheckouts, createUniform, updateUniform, deleteUniform } = useAppStore();
+  const activeUniforms = uniforms.filter((item) => item.is_active !== false);
   const [form, setForm] = useState(emptyForm);
   const [dialog, setDialog] = useState<{ open: boolean; mode: "create" | "edit"; item?: Uniform }>({
     open: false,
@@ -80,6 +81,16 @@ export function UniformesPanel() {
   });
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  const handleDelete = async (item: Uniform) => {
+    if (!confirm(`Excluir ${item.name}?`)) return;
+    setError("");
+    try {
+      await deleteUniform(item.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível excluir.");
+    }
+  };
 
   const openCreate = () => {
     setForm(emptyForm);
@@ -158,14 +169,16 @@ export function UniformesPanel() {
         </CardHeader>
       </Card>
 
-      {uniforms.length === 0 ? (
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+      {activeUniforms.length === 0 ? (
         <div className="rounded-lg border py-10 text-center text-sm text-muted-foreground">
           <Shirt className="mx-auto mb-2 h-7 w-7 opacity-30" />
           Nenhum uniforme cadastrado.
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
-          {uniforms.map((item) => {
+          {activeUniforms.map((item) => {
             const sizes = uniformTotals(item, uniformCheckouts);
             const outTotal = sizes.reduce((sum, s) => sum + s.out, 0);
             return (
@@ -207,9 +220,7 @@ export function UniformesPanel() {
                         variant="ghost"
                         size="icon"
                         className="h-5 w-5 text-destructive hover:text-destructive"
-                        onClick={() => {
-                          if (confirm(`Excluir ${item.name}?`)) deleteUniform(item.id);
-                        }}
+                        onClick={() => void handleDelete(item)}
                       >
                         <Trash2 className="h-3 w-3" />
                       </Button>

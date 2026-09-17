@@ -815,7 +815,7 @@ export function SettingsPage() {
   const simpleProducts = popProducts.filter((p) => !p.is_composite);
   const compositeProducts = popProducts.filter((p) => p.is_composite);
   const materialProducts = products.filter((p) => p.kind === "material" && p.is_active);
-  const boxAssets = assets.filter(isBoxAsset);
+  const boxAssets = assets.filter((a) => a.is_active !== false && isBoxAsset(a));
   const equipmentAssets = assets.filter(
     (a) => a.is_active !== false && !isBoxAsset(a) && !isUniformAsset(a)
   );
@@ -2370,7 +2370,11 @@ export function SettingsPage() {
             <DialogDescription className="text-sm">
               Tem certeza que deseja excluir{" "}
               <span className="font-medium">
-                {deleteDialog.item && "name" in deleteDialog.item ? deleteDialog.item.name : ""}
+                {deleteDialog.item && "code" in deleteDialog.item
+                  ? deleteDialog.item.code
+                  : deleteDialog.item && "name" in deleteDialog.item
+                    ? deleteDialog.item.name
+                    : ""}
               </span>
               ? Esta ação não pode ser desfeita.
             </DialogDescription>

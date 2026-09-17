@@ -606,7 +606,7 @@ export function AtivosPanel() {
                 title="Excluir"
                 onClick={() => {
                   void (async () => {
-                    if (!confirm(`Excluir ${item.name}?`)) return;
+                    if (!confirm(`Excluir ${item.code}${item.name ? ` · ${item.name}` : ""}?`)) return;
                     setError("");
                     try {
                       await deleteAsset(item.id);
