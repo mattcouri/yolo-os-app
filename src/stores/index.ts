@@ -102,6 +102,7 @@ interface AppState {
   createOrder: (data: CreateOrderData) => Promise<Order>;
   updatePlacedOrder: (orderId: string, data: CreateOrderData) => Promise<Order>;
   cancelPlacedOrder: (orderId: string) => Promise<void>;
+  deleteClosedOrder: (orderId: string) => Promise<void>;
   createInventoryCount: (locationId: string) => Promise<InventoryCount>;
   
   updateStock: (id: string, data: Partial<Stock>) => Promise<void>;
@@ -2676,6 +2677,46 @@ export const useAppStore = create<AppState>((set, get) => ({
         heldAssets.includes(asset.id)
           ? { ...asset, status: 'available', last_moved_at: now, updated_at: now }
           : asset
+      ),
+    }));
+  },
+
+  deleteClosedOrder: async (orderId) => {
+    const state = get();
+    const existing = state.orders.find((row) => row.id === orderId);
+    if (!existing) throw new Error('Pedido não encontrado.');
+
+    if (isSupabaseConfigured && supabase) {
+      const relatedDeletes = [
+        supabase.from('separation_jobs').delete().eq('order_id', orderId),
+        supabase.from('equipment_reservations').delete().eq('order_id', orderId),
+        supabase.from('uniform_checkouts').delete().eq('order_id', orderId),
+        supabase.from('order_items').delete().eq('order_id', orderId),
+        supabase.from('order_attachments').delete().eq('order_id', orderId),
+        supabase.from('order_events').delete().eq('order_id', orderId),
+      ];
+      const results = await Promise.all(relatedDeletes);
+      for (const result of results) {
+        if (result.error && !/schema cache|does not exist|Could not find the table/i.test(result.error.message)) {
+          throw new Error(result.error.message);
+        }
+      }
+      const movements = await supabase.from('movements').update({ order_id: null }).eq('order_id', orderId);
+      if (movements.error && !/schema cache|does not exist|Could not find the table/i.test(movements.error.message)) {
+        throw new Error(movements.error.message);
+      }
+      const { error } = await supabase.from('orders').delete().eq('id', orderId);
+      if (error) throw new Error(error.message);
+    }
+
+    set((s) => ({
+      orders: s.orders.filter((row) => row.id !== orderId),
+      orderItems: s.orderItems.filter((row) => row.order_id !== orderId),
+      separationJobs: s.separationJobs.filter((row) => row.order_id !== orderId),
+      equipmentReservations: s.equipmentReservations.filter((row) => row.order_id !== orderId),
+      uniformCheckouts: s.uniformCheckouts.filter((row) => row.order_id !== orderId),
+      movements: s.movements.map((row) =>
+        row.order_id === orderId ? { ...row, order_id: null } : row
       ),
     }));
   },

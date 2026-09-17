@@ -10,13 +10,14 @@ import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/ui/data-table";
 import { CreatableSelect, type SelectOption } from "@/components/ui/creatable-select";
 import { useAppStore } from "@/stores";
-import { Plus, Pencil, Trash2, Copy, MapPin, Package, Box, Warehouse, IceCream, Layers, Wrench, Shirt, Snowflake, Droplets, QrCode, Download } from "lucide-react";
+import { Plus, Pencil, Trash2, Copy, MapPin, Package, Box, Warehouse, IceCream, Layers, Wrench, Shirt, Snowflake, Droplets, QrCode, Download, ImagePlus } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { Location, Product, Asset } from "@/types/database";
 import { AtivosPanel } from "@/pages/settings/ativos-panel";
 import { UniformesPanel } from "@/pages/settings/uniformes-panel";
 import { isBoxAsset } from "@/lib/operational-assets";
 import { assetYardLocations, productStockLocations } from "@/lib/locations";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 const LOCATION_TYPES: Location["type"][] = ["receiving", "storage", "freezer", "shipping", "other"];
 
@@ -71,6 +72,72 @@ const defaultPackagingTypes: SelectOption[] = [
 const getTypeLabel = (types: SelectOption[], value: string) => {
   return types.find((t) => t.value === value)?.label || value;
 };
+
+const emptyAssetForm = {
+  code: "",
+  name: "",
+  description: "",
+  type: "caixa_media",
+  unit_capacity: "",
+  photo_url: "",
+};
+
+async function uploadBoxPhoto(file: File) {
+  if (!isSupabaseConfigured || !supabase) return URL.createObjectURL(file);
+  const safeName = file.name.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9._-]/g, "");
+  const path = `assets/${crypto.randomUUID()}-${safeName}`;
+  const { error } = await supabase.storage.from("asset-files").upload(path, file);
+  if (error) throw new Error(error.message);
+  return supabase.storage.from("asset-files").getPublicUrl(path).data.publicUrl;
+}
+
+function BoxPhotoSlot({
+  url,
+  onPick,
+  onClear,
+}: {
+  url: string;
+  onPick: (file: File) => Promise<void> | void;
+  onClear: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <div className="flex w-28 shrink-0 flex-col gap-1">
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        className="flex aspect-square w-full items-center justify-center overflow-hidden rounded-md border bg-muted"
+      >
+        {url ? (
+          <img src={url} alt="Foto da caixa" className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex flex-col items-center gap-1 text-muted-foreground">
+            <ImagePlus className="h-5 w-5" />
+            <span className="text-[10px]">Foto</span>
+          </div>
+        )}
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) void onPick(file);
+          event.target.value = "";
+        }}
+      />
+      {url ? (
+        <button type="button" className="text-[10px] text-muted-foreground hover:text-destructive" onClick={onClear}>
+          Remover
+        </button>
+      ) : (
+        <span className="text-[10px] text-muted-foreground">Clique para enviar</span>
+      )}
+    </div>
+  );
+}
 
 function LocationCadastroTable({
   rows,
@@ -324,13 +391,7 @@ export function SettingsPage() {
     components: [] as ComponentItem[],
   });
 
-  const [assetFormData, setAssetFormData] = useState({
-    code: "",
-    name: "",
-    description: "",
-    type: "caixa_media",
-    unit_capacity: "",
-  });
+  const [assetFormData, setAssetFormData] = useState(emptyAssetForm);
 
   // QR Code dialog state
   const [qrDialog, setQrDialog] = useState<{ open: boolean; asset: Asset | null }>({ open: false, asset: null });
@@ -645,6 +706,7 @@ export function SettingsPage() {
           description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
           unit_capacity: unitCapacity,
+          photo_url: assetFormData.photo_url || null,
           status: "available",
           is_active: true,
         });
@@ -655,11 +717,12 @@ export function SettingsPage() {
           description: assetFormData.description || null,
           type: assetFormData.type as Asset["type"],
           unit_capacity: unitCapacity,
+          photo_url: assetFormData.photo_url || null,
         });
       }
       
       setAssetDialog({ open: false, mode: "create", assetType: "box" });
-      setAssetFormData({ code: "", name: "", description: "", type: "caixa_media", unit_capacity: "" });
+      setAssetFormData(emptyAssetForm);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erro ao salvar";
       alert(`Erro ao salvar: ${message}`);
@@ -710,6 +773,7 @@ export function SettingsPage() {
       description: item.description || "",
       type: item.type,
       unit_capacity: item.unit_capacity ? String(item.unit_capacity) : "",
+      photo_url: item.photo_url || "",
     });
     setAssetDialog({ open: true, mode: "edit", assetType, item });
   };
@@ -1435,7 +1499,7 @@ export function SettingsPage() {
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => {
-                    setAssetFormData({ code: "", name: "", description: "", type: "caixa_media", unit_capacity: "" });
+                    setAssetFormData(emptyAssetForm);
                     setAssetDialog({ open: true, mode: "create", assetType: "box" });
                   }}
                 >
@@ -1451,6 +1515,20 @@ export function SettingsPage() {
                 searchPlaceholder="Buscar caixa..."
                 emptyMessage="Nenhuma caixa cadastrada."
                 columns={[
+                  {
+                    key: "photo_url",
+                    header: "",
+                    width: "w-12",
+                    sortable: false,
+                    render: (item) =>
+                      item.photo_url ? (
+                        <img src={item.photo_url} alt="" className="h-9 w-9 rounded-md object-cover" />
+                      ) : (
+                        <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted">
+                          <Box className="h-3.5 w-3.5 text-muted-foreground" />
+                        </div>
+                      ),
+                  },
                   {
                     key: "type",
                     header: "Tipo",
@@ -1544,6 +1622,7 @@ export function SettingsPage() {
                           description: item.description || "",
                           type: item.type,
                           unit_capacity: item.unit_capacity ? String(item.unit_capacity) : "",
+                          photo_url: item.photo_url || "",
                         });
                         setAssetDialog({ open: true, mode: "create", assetType: "box" });
                       }}
@@ -2098,6 +2177,25 @@ export function SettingsPage() {
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            {assetDialog.assetType === "box" && (
+              <div className="flex items-start gap-4">
+                <BoxPhotoSlot
+                  url={assetFormData.photo_url}
+                  onPick={async (file) => {
+                    try {
+                      const url = await uploadBoxPhoto(file);
+                      setAssetFormData((current) => ({ ...current, photo_url: url }));
+                    } catch (error) {
+                      alert(error instanceof Error ? error.message : "Não foi possível enviar a foto.");
+                    }
+                  }}
+                  onClear={() => setAssetFormData((current) => ({ ...current, photo_url: "" }))}
+                />
+                <p className="pt-2 text-xs text-muted-foreground">
+                  Foto da caixa para o kanban de ativos e identificação visual.
+                </p>
+              </div>
+            )}
             {assetDialog.assetType === "equipment" && (
               <div className="space-y-2">
                 <Label htmlFor="assetName" className="text-sm">Nome</Label>
@@ -2195,7 +2293,7 @@ export function SettingsPage() {
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => {
               setAssetDialog({ open: false, mode: "create", assetType: "box" });
-              setAssetFormData({ code: "", name: "", description: "", type: "caixa_media", unit_capacity: "" });
+              setAssetFormData(emptyAssetForm);
             }} className="h-9">
               Cancelar
             </Button>

@@ -1,13 +1,15 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ClipboardList, MapPin } from "lucide-react";
+import { ClipboardList, MapPin, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/ui/data-table";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { streetAssets, type StreetAssetRow } from "@/lib/ativos-na-rua";
+import { useAuthProfile } from "@/lib/auth";
 import {
   TYPE_LABEL,
   formatEventDay,
@@ -138,9 +140,13 @@ function buildHistoryRows(
 }
 
 export function ReportsPage() {
-  const { orders, orderItems, separationJobs, assets, uniforms, uniformCheckouts } = useAppStore();
+  const { orders, orderItems, separationJobs, assets, uniforms, uniformCheckouts, deleteClosedOrder } = useAppStore();
+  const { isAdmin } = useAuthProfile();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [deleting, setDeleting] = useState<HistoryRow | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const history = useMemo(() => {
     const rows = buildHistoryRows(orders, orderItems, separationJobs);
@@ -165,6 +171,20 @@ export function ReportsPage() {
     setTo(`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`);
   };
 
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteClosedOrder(deleting.id);
+      setDeleting(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível excluir o pedido.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -182,7 +202,9 @@ export function ReportsPage() {
                 <ClipboardList className="h-4 w-4" />
                 Pedidos encerrados
               </CardTitle>
-              <CardDescription>O mesmo ID do Acompanhar. Encerrar não apaga o pedido.</CardDescription>
+              <CardDescription>
+                O mesmo ID do Acompanhar. Encerrar não apaga o pedido; só o admin pode excluir um registro daqui.
+              </CardDescription>
             </div>
             <Badge variant="secondary">{history.length}</Badge>
           </div>
@@ -277,6 +299,25 @@ export function ReportsPage() {
                 render: (row: HistoryRow) => <Badge variant="secondary">{row.retorno}</Badge>,
               },
             ]}
+            actions={
+              isAdmin
+                ? (row) => (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      title="Excluir registro"
+                      onClick={() => {
+                        setError(null);
+                        setDeleting(row);
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )
+                : undefined
+            }
           />
         </CardContent>
       </Card>
@@ -372,6 +413,28 @@ export function ReportsPage() {
           />
         </CardContent>
       </Card>
+
+      <Dialog open={Boolean(deleting)} onOpenChange={(open) => !busy && !open && setDeleting(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Excluir pedido do histórico?</DialogTitle>
+            <DialogDescription>
+              {deleting
+                ? `O pedido ${deleting.orderNumber} (${deleting.organization}) será removido desta lista. Essa ação não pode ser desfeita.`
+                : "O registro será removido desta lista."}
+            </DialogDescription>
+          </DialogHeader>
+          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={busy} onClick={() => setDeleting(null)}>
+              Cancelar
+            </Button>
+            <Button type="button" variant="destructive" disabled={busy} onClick={() => void confirmDelete()}>
+              {busy ? "Excluindo…" : "Excluir"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
