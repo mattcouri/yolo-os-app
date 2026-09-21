@@ -934,7 +934,7 @@ function InventoryBoard({ kind }: { kind: "sku" | "material" }) {
   const skuRows = filtered.filter((row) => row.kind === "pop");
   const materialRows = filtered.filter((row) => row.kind === "material");
   const listRows = kind === "material" ? materialRows : skuRows;
-  const liveMaterials = materialStock.filter((item) => item.quantity > 0 && item.status !== "depleted");
+  const liveMaterials = materialStock.filter((item) => item.quantity > 0 && item.status !== "blocked");
   const totalMaterials = liveMaterials.reduce((sum, item) => sum + item.quantity, 0);
   const analysisMaterials = liveMaterials
     .filter((item) => item.status === "analysis")
