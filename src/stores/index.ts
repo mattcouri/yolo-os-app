@@ -327,6 +327,7 @@ function dirtyYardId(locations: Location[]) {
 
 async function saveUniformStock(prev: UniformStock[], next: UniformStock[]) {
   if (!isSupabaseConfigured || !supabase) return;
+  const client = supabase;
   const nextIds = new Set(next.map((row) => row.id));
   const deleted = prev.filter((row) => !nextIds.has(row.id)).map((row) => row.id);
   const upserts = next.filter((row) => {
@@ -335,11 +336,11 @@ async function saveUniformStock(prev: UniformStock[], next: UniformStock[]) {
   });
   const run = async () => {
     if (deleted.length) {
-      const result = await supabase.from('uniform_stock').delete().in('id', deleted);
+      const result = await client.from('uniform_stock').delete().in('id', deleted);
       if (result.error && !missingRelation(result.error.message)) throw new Error(result.error.message);
     }
     if (upserts.length) {
-      const result = await supabase.from('uniform_stock').upsert(upserts, {
+      const result = await client.from('uniform_stock').upsert(upserts, {
         onConflict: 'uniform_id,size,location_id',
       });
       if (result.error && !missingRelation(result.error.message)) throw new Error(result.error.message);
