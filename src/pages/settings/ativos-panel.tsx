@@ -40,7 +40,7 @@ import {
   cleanLocation,
   isOperationalAsset,
 } from "@/lib/operational-assets";
-import { orderedAssetYardLocations } from "@/lib/locations";
+import { orderedEquipmentYardLocations } from "@/lib/locations";
 import { useAppStore } from "@/stores";
 import type {
   Asset,
@@ -229,7 +229,7 @@ export function AtivosPanel() {
     () => assets.filter((asset) => asset.is_active !== false && isOperationalAsset(asset)),
     [assets]
   );
-  const yardLocations = useMemo(() => orderedAssetYardLocations(locations), [locations]);
+  const yardLocations = useMemo(() => orderedEquipmentYardLocations(locations), [locations]);
   const homeLocationId =
     cleanLocation(locations)?.id || yardLocations[0]?.id || "";
 

@@ -4,8 +4,10 @@ import { Shirt } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { KanbanColumnHandle, SortableKanbanColumns } from "@/components/kanban-sortable-columns";
 import { DataTable } from "@/components/ui/data-table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { applySavedColumnOrder, KANBAN_BOARDS } from "@/lib/kanban-order";
 import { isSalaTradeLocation, orderedUniformYardLocations } from "@/lib/locations";
 import { UNIFORM_SIZES, UNIFORM_STREET_COLUMN, availableForSize, stockQtyAt } from "@/lib/uniforms";
 import { cn } from "@/lib/utils";
@@ -254,8 +256,17 @@ function buildRows(
 }
 
 export function UniformesPage() {
-  const { uniforms, uniformCheckouts, uniformStock, orders, locations, moveUniformUnit, seedUniformStockIfNeeded } =
-    useAppStore();
+  const {
+    uniforms,
+    uniformCheckouts,
+    uniformStock,
+    orders,
+    locations,
+    moveUniformUnit,
+    seedUniformStockIfNeeded,
+    kanbanColumnOrders,
+    saveKanbanColumnOrder,
+  } = useAppStore();
   const [filter, setFilter] = useState<FilterId>("all");
   const [openGroup, setOpenGroup] = useState<TypeGroup | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -270,7 +281,10 @@ export function UniformesPage() {
     () => buildRows(uniforms, uniformCheckouts, uniformStock, orders, yardLocations),
     [uniforms, uniformCheckouts, uniformStock, orders, locations, yardLocations]
   );
-  const columns = useMemo(() => boardColumns(yardLocations), [yardLocations]);
+  const columns = useMemo(
+    () => applySavedColumnOrder(boardColumns(yardLocations), kanbanColumnOrders[KANBAN_BOARDS.uniformes]),
+    [yardLocations, kanbanColumnOrders]
+  );
   const rows = useMemo(
     () =>
       patio.filter((row) =>
@@ -331,16 +345,21 @@ export function UniformesPage() {
         </p>
       ) : null}
 
-      <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
-        {columns.map((columnId) => {
+      <SortableKanbanColumns
+        columnIds={columns}
+        onReorder={(ids) => {
+          void saveKanbanColumnOrder(KANBAN_BOARDS.uniformes, ids);
+        }}
+      >
+        {(columnId, handle) => {
           const cards = patio.filter((row) => row.columnId === columnId);
           return (
-            <section
-              key={columnId}
-              className="flex w-[16.5rem] shrink-0 flex-col rounded-xl border bg-muted/30"
-            >
+            <section className="flex w-[16.5rem] flex-col rounded-xl border bg-muted/30">
               <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5">
-                <h2 className="truncate text-sm font-semibold">{columnTitle(columnId, yardLocations)}</h2>
+                <div className="flex min-w-0 items-center gap-1">
+                  <KanbanColumnHandle attributes={handle.attributes} listeners={handle.listeners} />
+                  <h2 className="truncate text-sm font-semibold">{columnTitle(columnId, yardLocations)}</h2>
+                </div>
                 <Badge variant="secondary">{cards.length}</Badge>
               </header>
               <div className="max-h-[28rem] space-y-2 overflow-y-auto p-2">
@@ -354,8 +373,8 @@ export function UniformesPage() {
               </div>
             </section>
           );
-        })}
-      </div>
+        }}
+      </SortableKanbanColumns>
 
       <Card>
         <CardHeader className="pb-3">

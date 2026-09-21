@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
-import { isSalaTradeLocation, locationPurpose, orderedUniformYardLocations, productStockLocations } from '@/lib/locations';
+import {
+  defaultStoredKinds,
+  isSalaTradeLocation,
+  locationPurpose,
+  normalizeStoredKinds,
+  orderedUniformYardLocations,
+  productStockLocations,
+} from '@/lib/locations';
+import type { LocationKind } from '@/types/database';
 import {
   ASSET_CLEAN_SYSTEM_KEY,
   ASSET_DIRTY_SYSTEM_KEY,
@@ -87,9 +95,12 @@ interface AppState {
   uniformCheckouts: UniformCheckout[];
   uniformStock: UniformStock[];
   vehicles: Vehicle[];
+  kanbanColumnOrders: Record<string, string[]>;
   
   fetchAll: () => Promise<void>;
   fetchLocations: () => Promise<void>;
+  fetchKanbanColumnOrders: () => Promise<void>;
+  saveKanbanColumnOrder: (boardKey: string, columnIds: string[]) => Promise<void>;
   fetchProducts: () => Promise<void>;
   fetchProductComponents: () => Promise<void>;
   saveProductComponents: (productId: string, components: { product_id: string; quantity: number }[]) => Promise<void>;
@@ -496,17 +507,27 @@ async function syncCompositeRestock(
 const normalizeAssetCode = (code: string) => 
   code.trim().toUpperCase().replace(/[\s_-]+/g, '-');
 
+function mapLocationRow(location: Location): Location {
+  return {
+    ...location,
+    requires_box: location.requires_box !== false,
+    system_key: location.system_key ?? null,
+    purpose: locationPurpose(location),
+    stored_kinds: normalizeStoredKinds(location),
+  };
+}
+
 const defaultLocations: Location[] = [
-  { id: '1', name: 'Recebimento', type: 'receiving', purpose: 'product', is_active: true, sort_order: 0, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '2', name: 'Resfriado', type: 'storage', purpose: 'product', is_active: true, sort_order: 1, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '3', name: 'Congelado', type: 'freezer', purpose: 'product', is_active: true, sort_order: 2, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '4', name: 'Estoque seco', type: 'storage', purpose: 'product', is_active: true, sort_order: 3, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '5', name: 'Freezer cozinha', type: 'freezer', purpose: 'product', is_active: true, sort_order: 4, requires_box: false, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '6', name: 'Expedição', type: 'shipping', purpose: 'product', is_active: true, sort_order: 5, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '7', name: 'Produtos montados', type: 'storage', purpose: 'product', is_active: true, sort_order: 90, requires_box: false, system_key: ASSEMBLED_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '8', name: 'Área suja', type: 'other', purpose: 'asset', is_active: true, sort_order: 100, requires_box: false, system_key: ASSET_DIRTY_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '9', name: 'Área limpa', type: 'other', purpose: 'asset', is_active: true, sort_order: 101, requires_box: false, system_key: ASSET_CLEAN_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-  { id: '10', name: 'Fábrica', type: 'other', purpose: 'asset', is_active: true, sort_order: 102, requires_box: false, system_key: ASSET_FACTORY_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '1', name: 'Recebimento', type: 'receiving', purpose: 'product', stored_kinds: ['sku', 'material'], is_active: true, sort_order: 0, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '2', name: 'Resfriado', type: 'storage', purpose: 'product', stored_kinds: ['sku', 'material'], is_active: true, sort_order: 1, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '3', name: 'Congelado', type: 'freezer', purpose: 'product', stored_kinds: ['sku', 'material'], is_active: true, sort_order: 2, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '4', name: 'Estoque seco', type: 'storage', purpose: 'product', stored_kinds: ['sku', 'material'], is_active: true, sort_order: 3, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '5', name: 'Freezer cozinha', type: 'freezer', purpose: 'product', stored_kinds: ['sku', 'material'], is_active: true, sort_order: 4, requires_box: false, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '6', name: 'Expedição', type: 'shipping', purpose: 'product', stored_kinds: ['sku', 'material'], is_active: true, sort_order: 5, requires_box: true, system_key: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '7', name: 'Produtos montados', type: 'storage', purpose: 'product', stored_kinds: ['sku'], is_active: true, sort_order: 90, requires_box: false, system_key: ASSEMBLED_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '8', name: 'Área suja', type: 'other', purpose: 'asset', stored_kinds: ['ativo', 'embalagem', 'uniforme'], is_active: true, sort_order: 100, requires_box: false, system_key: ASSET_DIRTY_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '9', name: 'Área limpa', type: 'other', purpose: 'asset', stored_kinds: ['ativo', 'embalagem', 'uniforme'], is_active: true, sort_order: 101, requires_box: false, system_key: ASSET_CLEAN_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+  { id: '10', name: 'Fábrica', type: 'other', purpose: 'asset', stored_kinds: ['embalagem'], is_active: true, sort_order: 102, requires_box: false, system_key: ASSET_FACTORY_SYSTEM_KEY, created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
 ];
 
 const defaultProducts: Product[] = [
@@ -571,6 +592,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   uniformCheckouts: [],
   uniformStock: [],
   vehicles: [],
+  kanbanColumnOrders: {},
   
   clearError: () => set({ error: null }),
   
@@ -591,6 +613,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       state.fetchEquipmentReservations(),
       state.fetchUniforms(),
       state.fetchVehicles(),
+      state.fetchKanbanColumnOrders(),
     ]);
     void get().seedUniformStockIfNeeded();
     const next = get();
@@ -616,15 +639,40 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ error: error.message, isLoading: false });
     } else {
       set({
-        locations: (data || defaultLocations).map((location) => ({
-          ...location,
-          requires_box: location.requires_box !== false,
-          system_key: location.system_key ?? null,
-          purpose: locationPurpose(location),
-        })),
+        locations: (data || defaultLocations).map((location) => mapLocationRow(location as Location)),
         isLoading: false,
       });
     }
+  },
+
+  fetchKanbanColumnOrders: async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const { data, error } = await supabase.from('kanban_column_orders').select('board_key, column_ids');
+    if (error) {
+      set({ error: error.message });
+      return;
+    }
+    const next: Record<string, string[]> = {};
+    for (const row of data || []) {
+      if (row.board_key && Array.isArray(row.column_ids)) {
+        next[row.board_key] = row.column_ids.filter((id: unknown): id is string => typeof id === 'string');
+      }
+    }
+    set({ kanbanColumnOrders: next });
+  },
+
+  saveKanbanColumnOrder: async (boardKey, columnIds) => {
+    const now = new Date().toISOString();
+    set((state) => ({
+      kanbanColumnOrders: { ...state.kanbanColumnOrders, [boardKey]: columnIds },
+    }));
+    if (!isSupabaseConfigured || !supabase) return;
+    const { error } = await supabase.from('kanban_column_orders').upsert({
+      board_key: boardKey,
+      column_ids: columnIds,
+      updated_at: now,
+    });
+    if (error) throw new Error(error.message);
   },
   
   fetchProducts: async () => {
@@ -660,10 +708,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   createLocation: async (data) => {
     const now = new Date().toISOString();
     const purpose = data.purpose === 'asset' ? 'asset' : 'product';
+    const stored_kinds = (data.stored_kinds?.length
+      ? data.stored_kinds
+      : defaultStoredKinds({ ...data, purpose })) as LocationKind[];
     const newLocation: Location = {
       id: generateId(),
       ...data,
       purpose,
+      stored_kinds,
       system_key: data.system_key ?? null,
       requires_box: purpose === 'asset' ? false : data.requires_box !== false,
       created_at: now,
@@ -677,8 +729,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         .select()
         .single();
       if (error) throw new Error(error.message);
-      set((state) => ({ locations: [...state.locations, inserted] }));
-      return inserted;
+      const mapped = mapLocationRow(inserted as Location);
+      set((state) => ({ locations: [...state.locations, mapped] }));
+      return mapped;
     } else {
       set((state) => ({ locations: [...state.locations, newLocation] }));
       return newLocation;
@@ -893,8 +946,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   ensureAssembledLocation: async () => {
     const existing = assembledLocation(get().locations);
     if (existing) {
-      if (existing.purpose !== 'product') {
-        await get().updateLocation(existing.id, { purpose: 'product' });
+      if (existing.purpose !== 'product' || !existing.stored_kinds?.length) {
+        await get().updateLocation(existing.id, {
+          purpose: 'product',
+          stored_kinds: existing.stored_kinds?.length ? existing.stored_kinds : ['sku'],
+        });
       }
       return get().locations.find((location) => location.id === existing.id) || existing;
     }
@@ -905,6 +961,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().updateLocation(byName.id, {
         system_key: ASSEMBLED_SYSTEM_KEY,
         purpose: 'product',
+        stored_kinds: ['sku'],
         requires_box: false,
         is_active: true,
       });
@@ -917,8 +974,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       is_active: true,
       sort_order: 90,
       requires_box: false,
-      system_key: ASSEMBLED_SYSTEM_KEY,
-    });
+        stored_kinds: ['sku'],
+        system_key: ASSEMBLED_SYSTEM_KEY,
+      });
   },
 
   ensureAssetYardLocations: async () => {
@@ -930,8 +988,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     for (const yard of yards) {
       const existing = get().locations.find((location) => location.system_key === yard.key);
       if (existing) {
-        if (existing.purpose !== 'asset') {
-          await get().updateLocation(existing.id, { purpose: 'asset' });
+        if (existing.purpose !== 'asset' || !existing.stored_kinds?.length) {
+          await get().updateLocation(existing.id, {
+            purpose: 'asset',
+            stored_kinds: existing.stored_kinds?.length
+              ? existing.stored_kinds
+              : defaultStoredKinds({ ...existing, purpose: 'asset', system_key: yard.key }),
+          });
         }
         continue;
       }
@@ -942,6 +1005,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         await get().updateLocation(byName.id, {
           system_key: yard.key,
           purpose: 'asset',
+          stored_kinds: defaultStoredKinds({
+            purpose: 'asset',
+            system_key: yard.key,
+            name: byName.name,
+          }),
           requires_box: false,
           is_active: true,
         });
@@ -951,6 +1019,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         name: yard.name,
         type: 'other',
         purpose: 'asset',
+        stored_kinds: defaultStoredKinds({ purpose: 'asset', system_key: yard.key, name: yard.name }),
         is_active: true,
         sort_order: yard.sort_order,
         requires_box: false,

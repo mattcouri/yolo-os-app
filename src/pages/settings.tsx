@@ -12,12 +12,19 @@ import { CreatableSelect, type SelectOption } from "@/components/ui/creatable-se
 import { useAppStore } from "@/stores";
 import { Plus, Pencil, Trash2, Copy, MapPin, Package, Box, Warehouse, IceCream, Layers, Wrench, Shirt, Snowflake, Droplets, QrCode, Download, ImagePlus } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import type { Location, Product, Asset } from "@/types/database";
+import type { Location, LocationKind, Product, Asset } from "@/types/database";
 import { AtivosPanel } from "@/pages/settings/ativos-panel";
 import { UniformesPanel } from "@/pages/settings/uniformes-panel";
 import { EmbalagensPanel } from "@/pages/settings/embalagens-panel";
 import { cleanLocation, formatBoxOuterMeasures, isBoxAsset, isUniformAsset } from "@/lib/operational-assets";
-import { assetYardLocations, orderedAssetYardLocations, productStockLocations } from "@/lib/locations";
+import {
+  assetYardLocations,
+  defaultStoredKinds,
+  LOCATION_KIND_OPTIONS,
+  locationKindLabels,
+  orderedBoxYardLocations,
+  productStockLocations,
+} from "@/lib/locations";
 import { popBaseQuantity } from "@/lib/assembly";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
@@ -25,6 +32,56 @@ const LOCATION_TYPES: Location["type"][] = ["receiving", "storage", "freezer", "
 
 function asLocationType(value: string): Location["type"] {
   return LOCATION_TYPES.includes(value as Location["type"]) ? (value as Location["type"]) : "other";
+}
+
+type LocationFormState = {
+  name: string;
+  type: Location["type"];
+  purpose: Location["purpose"];
+  requires_box: boolean;
+  stored_kinds: LocationKind[];
+};
+
+function withEmbalagemKind(kinds: LocationKind[], include: boolean): LocationKind[] {
+  const next = kinds.filter((kind) => kind !== "embalagem");
+  return include ? [...next, "embalagem"] : next;
+}
+
+function syncSkuBoxAndEmbalagem(
+  form: LocationFormState,
+  change: { requires_box?: boolean; stored_kinds?: LocationKind[] }
+): LocationFormState {
+  if (form.purpose === "asset") {
+    return { ...form, ...change };
+  }
+  if (change.requires_box !== undefined) {
+    return {
+      ...form,
+      requires_box: change.requires_box,
+      stored_kinds: withEmbalagemKind(change.stored_kinds ?? form.stored_kinds, change.requires_box),
+    };
+  }
+  if (change.stored_kinds) {
+    const requireBox = change.stored_kinds.includes("embalagem");
+    return {
+      ...form,
+      requires_box: requireBox,
+      stored_kinds: withEmbalagemKind(change.stored_kinds, requireBox),
+    };
+  }
+  return form;
+}
+
+function productLocationForm(partial: Partial<LocationFormState> & Pick<LocationFormState, "name" | "type">): LocationFormState {
+  const requires_box = partial.requires_box !== false;
+  const stored_kinds = withEmbalagemKind(partial.stored_kinds ?? ["sku", "material"], requires_box);
+  return {
+    name: partial.name,
+    type: partial.type,
+    purpose: "product",
+    requires_box,
+    stored_kinds,
+  };
 }
 
 function nullableText(enabled: boolean, value: string) {
@@ -202,6 +259,15 @@ function LocationCadastroTable({
             ),
           },
           {
+            key: "stored_kinds",
+            header: "Guarda",
+            render: (item) => (
+              <span className="text-xs text-muted-foreground">
+                {locationKindLabels(item).join(", ") || "—"}
+              </span>
+            ),
+          },
+          {
             key: "requires_box",
             header: "Estoque",
             width: "w-28",
@@ -348,7 +414,7 @@ export function SettingsPage() {
   const productLocations = useMemo(() => productStockLocations(locations), [locations]);
   const assetLocations = useMemo(() => assetYardLocations(locations), [locations]);
   const boxHomeLocationId =
-    cleanLocation(locations)?.id || orderedAssetYardLocations(locations)[0]?.id || "";
+    cleanLocation(locations)?.id || orderedBoxYardLocations(locations)[0]?.id || "";
   
   const [locationTypes, setLocationTypes] = useState<SelectOption[]>(defaultLocationTypes);
   const [materialTypes, setMaterialTypes] = useState<SelectOption[]>(defaultMaterialTypes);
@@ -385,17 +451,9 @@ export function SettingsPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
 
-  const [formData, setFormData] = useState<{
-    name: string;
-    type: Location["type"];
-    purpose: Location["purpose"];
-    requires_box: boolean;
-  }>({
-    name: "",
-    type: "storage",
-    purpose: "product",
-    requires_box: true,
-  });
+  const [formData, setFormData] = useState<LocationFormState>(
+    productLocationForm({ name: "", type: "storage" })
+  );
 
   const [productFormData, setProductFormData] = useState({
     code: "",
@@ -550,6 +608,7 @@ export function SettingsPage() {
         name: formData.name,
         type: formData.type,
         purpose: formData.purpose,
+        stored_kinds: formData.stored_kinds,
         is_active: true,
         sort_order: locations.length,
         requires_box: formData.purpose === "asset" ? false : formData.requires_box,
@@ -560,12 +619,13 @@ export function SettingsPage() {
         name: formData.name,
         type: formData.type,
         purpose: formData.purpose,
+        stored_kinds: formData.stored_kinds,
         requires_box: formData.purpose === "asset" ? false : formData.requires_box,
       });
     }
     
     setLocationDialog({ open: false, mode: "create" });
-    setFormData({ name: "", type: "storage", purpose: "product", requires_box: true });
+    setFormData(productLocationForm({ name: "", type: "storage" }));
   };
 
   const handleProductSubmit = async () => {
@@ -745,12 +805,24 @@ export function SettingsPage() {
   };
 
   const openEditLocation = (item: Location) => {
-    setFormData({
-      name: item.name,
-      type: item.type,
-      purpose: item.purpose === "asset" ? "asset" : "product",
-      requires_box: item.requires_box !== false,
-    });
+    const purpose = item.purpose === "asset" ? "asset" : "product";
+    const stored_kinds = item.stored_kinds?.length ? item.stored_kinds : defaultStoredKinds(item);
+    setFormData(
+      purpose === "product"
+        ? productLocationForm({
+            name: item.name,
+            type: item.type,
+            requires_box: item.requires_box !== false || stored_kinds.includes("embalagem"),
+            stored_kinds,
+          })
+        : {
+            name: item.name,
+            type: item.type,
+            purpose: "asset",
+            requires_box: false,
+            stored_kinds,
+          }
+    );
     setLocationDialog({ open: true, mode: "edit", item });
   };
 
@@ -908,7 +980,7 @@ export function SettingsPage() {
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => {
-                    setFormData({ name: "", type: "storage", purpose: "product", requires_box: true });
+                    setFormData(productLocationForm({ name: "", type: "storage" }));
                     setLocationDialog({ open: true, mode: "create" });
                   }}
                 >
@@ -924,12 +996,14 @@ export function SettingsPage() {
                 emptyMessage="Nenhum local de produto cadastrado."
                 onEdit={openEditLocation}
                 onDuplicate={(item) => {
-                  setFormData({
-                    name: item.name + " (cópia)",
-                    type: item.type,
-                    purpose: "product",
-                    requires_box: item.requires_box !== false,
-                  });
+                  setFormData(
+                    productLocationForm({
+                      name: item.name + " (cópia)",
+                      type: item.type,
+                      requires_box: item.requires_box !== false,
+                      stored_kinds: item.stored_kinds?.length ? item.stored_kinds : defaultStoredKinds(item),
+                    })
+                  );
                   setLocationDialog({ open: true, mode: "create" });
                 }}
                 onDelete={(item) => setDeleteDialog({ open: true, type: "location", item })}
@@ -950,7 +1024,13 @@ export function SettingsPage() {
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => {
-                    setFormData({ name: "", type: "other", purpose: "asset", requires_box: false });
+                    setFormData({
+                      name: "",
+                      type: "other",
+                      purpose: "asset",
+                      requires_box: false,
+                      stored_kinds: ["ativo", "embalagem", "uniforme"],
+                    });
                     setLocationDialog({ open: true, mode: "create" });
                   }}
                 >
@@ -971,6 +1051,7 @@ export function SettingsPage() {
                     type: item.type,
                     purpose: "asset",
                     requires_box: false,
+                    stored_kinds: item.stored_kinds?.length ? item.stored_kinds : defaultStoredKinds(item),
                   });
                   setLocationDialog({ open: true, mode: "create" });
                 }}
@@ -1550,9 +1631,7 @@ export function SettingsPage() {
                 : "Editar local"}
             </DialogTitle>
             <DialogDescription className="text-sm">
-              {formData.purpose === "asset"
-                ? "Este local aparece no pátio de ativos, uniformes e caixas."
-                : "Este local aparece no estoque de produtos e produtos montados."}
+              Escolha o que este local pode guardar. Isso define as colunas do kanban em Inventário, Ativos, Embalagens e Uniformes.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -1579,18 +1658,47 @@ export function SettingsPage() {
                 createPlaceholder="Novo tipo..."
               />
             </div>
+            <div className="space-y-2">
+              <Label className="text-sm">Pode guardar</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {LOCATION_KIND_OPTIONS.map((option) => {
+                  const checked = formData.stored_kinds.includes(option.value);
+                  return (
+                    <label key={option.value} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={checked}
+                        onChange={() => {
+                          setFormData((current) =>
+                            syncSkuBoxAndEmbalagem(current, {
+                              stored_kinds: checked
+                                ? current.stored_kinds.filter((kind) => kind !== option.value)
+                                : [...current.stored_kinds, option.value],
+                            })
+                          );
+                        }}
+                      />
+                      {option.label}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
             {formData.purpose !== "asset" && (
             <label className="flex items-start gap-2 text-sm">
               <input
                 type="checkbox"
                 className="mt-1 w-4 h-4"
                 checked={formData.requires_box}
-                onChange={(e) => setFormData({ ...formData, requires_box: e.target.checked })}
+                onChange={(e) =>
+                  setFormData((current) => syncSkuBoxAndEmbalagem(current, { requires_box: e.target.checked }))
+                }
               />
               <span>
-                Exige caixa média
+                SKU Exige Embalagem Vai-Vem
                 <span className="block text-xs text-muted-foreground">
-                  Desmarque para freezer da cozinha e outros estoques soltos. Rejeito ainda pode ir para o lixo no Preparar.
+                  Para este local, os SKUs estarão em embalagens. Desmarque caso o local armazene SKUs soltos (exemplo: freezer da cozinha).
                 </span>
               </span>
             </label>
@@ -1600,7 +1708,12 @@ export function SettingsPage() {
             <Button type="button" variant="outline" onClick={() => setLocationDialog({ open: false, mode: "create" })} className="h-9">
               Cancelar
             </Button>
-            <Button type="button" onClick={handleLocationSubmit} disabled={!formData.name} className="h-9">
+            <Button
+              type="button"
+              onClick={handleLocationSubmit}
+              disabled={!formData.name || formData.stored_kinds.length === 0}
+              className="h-9"
+            >
               {locationDialog.mode === "create" ? "Criar" : "Salvar"}
             </Button>
           </DialogFooter>
@@ -2228,7 +2341,7 @@ export function SettingsPage() {
                   value={assetFormData.location_id}
                   onChange={(e) => setAssetFormData({ ...assetFormData, location_id: e.target.value })}
                 >
-                  {orderedAssetYardLocations(locations).map((location) => (
+                  {orderedBoxYardLocations(locations).map((location) => (
                     <option key={location.id} value={location.id}>
                       {location.name}
                     </option>

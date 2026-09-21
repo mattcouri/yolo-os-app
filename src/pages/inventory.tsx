@@ -6,11 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { KanbanColumnHandle, SortableKanbanColumns } from "@/components/kanban-sortable-columns";
 import { DataTable } from "@/components/ui/data-table";
 import { useAuthProfile } from "@/lib/auth";
 import { useAppStore } from "@/stores";
-import { assembledLocation, isAssemblyBox, popBaseQuantity, stockPopUnits } from "@/lib/assembly";
-import { productStockLocations } from "@/lib/locations";
+import { isAssemblyBox, popBaseQuantity, stockPopUnits } from "@/lib/assembly";
+import { applySavedColumnOrder, KANBAN_BOARDS } from "@/lib/kanban-order";
+import { locationsForKind } from "@/lib/locations";
 import type { Asset, Location, MaterialStock, Product, ProductComponent, Stock } from "@/types/database";
 
 type GradeKey = "AAA" | "B" | "C" | "blocked" | "analysis";
@@ -510,6 +512,7 @@ function InventoryKanban({
   onToggle,
   header,
   emptyBoard,
+  onReorder,
 }: {
   title: string;
   locations: Location[];
@@ -518,6 +521,7 @@ function InventoryKanban({
   onToggle: (id: string) => void;
   header: (location: Location, cards: SkuLocationRow[]) => { units: number; liquid: number; frozen: number; showState: boolean };
   emptyBoard: string;
+  onReorder: (ids: string[]) => void;
 }) {
   if (locations.length === 0) {
     return (
@@ -531,15 +535,24 @@ function InventoryKanban({
   return (
     <div className="space-y-3">
       <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">{title}</h2>
-      <div className="flex gap-4 overflow-x-auto pb-2">
-        {locations.map((location) => {
+      <SortableKanbanColumns
+        columnIds={locations.map((location) => location.id)}
+        onReorder={onReorder}
+        className="gap-4 pb-2"
+      >
+        {(columnId, handle) => {
+          const location = locations.find((item) => item.id === columnId);
+          if (!location) return null;
           const cards = rows.filter((row) => row.locationId === location.id);
           const { units, liquid, frozen, showState } = header(location, cards);
           return (
-            <div key={`${title}:${location.id}`} className="w-64 shrink-0 space-y-3">
+            <div className="w-64 space-y-3">
               <div className="flex items-center justify-between gap-2">
-                <h3 className="font-medium text-sm truncate">{location.name}</h3>
-                <span className="flex items-center gap-1 shrink-0">
+                <div className="flex min-w-0 items-center gap-1">
+                  <KanbanColumnHandle attributes={handle.attributes} listeners={handle.listeners} />
+                  <h3 className="truncate text-sm font-medium">{location.name}</h3>
+                </div>
+                <span className="flex shrink-0 items-center gap-1">
                   {showState && <StateMarks liquid={liquid} frozen={frozen} />}
                   <Badge variant="secondary">{units.toLocaleString("pt-BR")} un</Badge>
                 </span>
@@ -590,8 +603,8 @@ function InventoryKanban({
               </div>
             </div>
           );
-        })}
-      </div>
+        }}
+      </SortableKanbanColumns>
     </div>
   );
 }
@@ -637,32 +650,55 @@ function ExpandedDetails({ row }: { row: SkuLocationRow }) {
 }
 
 export function InventoryPage() {
-  const { locations, products, assets, stock, materialStock, productComponents } = useAppStore();
+  const {
+    locations,
+    products,
+    assets,
+    stock,
+    materialStock,
+    productComponents,
+    kanbanColumnOrders,
+    saveKanbanColumnOrder,
+  } = useAppStore();
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const activeLocations = useMemo(
-    () => productStockLocations(locations, true),
-    [locations]
-  );
+  const skuLocations = useMemo(() => {
+    const defaults = locationsForKind(locations, "sku");
+    const order = applySavedColumnOrder(
+      defaults.map((location) => location.id),
+      kanbanColumnOrders[KANBAN_BOARDS.inventorySku]
+    );
+    return order
+      .map((id) => defaults.find((location) => location.id === id))
+      .filter((location): location is Location => Boolean(location));
+  }, [locations, kanbanColumnOrders]);
+  const materialLocations = useMemo(() => {
+    const defaults = locationsForKind(locations, "material");
+    const order = applySavedColumnOrder(
+      defaults.map((location) => location.id),
+      kanbanColumnOrders[KANBAN_BOARDS.inventoryMaterial]
+    );
+    return order
+      .map((id) => defaults.find((location) => location.id === id))
+      .filter((location): location is Location => Boolean(location));
+  }, [locations, kanbanColumnOrders]);
+  const boardLocations = useMemo(() => {
+    const seen = new Set<string>();
+    return [...skuLocations, ...materialLocations].filter((location) => {
+      if (seen.has(location.id)) return false;
+      seen.add(location.id);
+      return true;
+    });
+  }, [skuLocations, materialLocations]);
 
   const rows = useMemo(
     () => buildRows(locations, products, assets, stock, materialStock, productComponents),
     [locations, products, assets, stock, materialStock, productComponents]
   );
-
   const filtered = rows.filter((row) => row.search.toLowerCase().includes(search.toLowerCase().trim()));
   const skuRows = filtered.filter((row) => row.kind === "pop");
   const materialRows = filtered.filter((row) => row.kind === "material");
-  const assembled = assembledLocation(activeLocations) || assembledLocation(locations);
-  const skuLocations = activeLocations.filter(
-    (location) =>
-      location.id === assembled?.id ||
-      rows.some((row) => row.kind === "pop" && row.locationId === location.id)
-  );
-  const materialLocations = activeLocations.filter((location) =>
-    rows.some((row) => row.kind === "material" && row.locationId === location.id)
-  );
   const countable = stock.filter(isCountablePop);
   const popUnits = (item: Stock) => stockPopUnits(item, products, productComponents);
   const totalPops = countable.reduce((sum, item) => sum + popUnits(item), 0);
@@ -748,7 +784,7 @@ export function InventoryPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>Localizações</CardDescription>
-            <CardTitle className="text-3xl">{activeLocations.length}</CardTitle>
+            <CardTitle className="text-3xl">{boardLocations.length}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-xs text-muted-foreground">áreas cadastradas</p>
@@ -773,7 +809,7 @@ export function InventoryPage() {
         </TabsList>
 
         <TabsContent value="board" className="space-y-8">
-          {activeLocations.length === 0 ? (
+          {boardLocations.length === 0 ? (
             <p className="text-sm text-muted-foreground">Cadastre localizações em Cadastros.</p>
           ) : (
             <>
@@ -783,6 +819,9 @@ export function InventoryPage() {
                 rows={skuRows}
                 expanded={expanded}
                 onToggle={(id) => setExpanded(expanded === id ? null : id)}
+                onReorder={(ids) => {
+                  void saveKanbanColumnOrder(KANBAN_BOARDS.inventorySku, ids);
+                }}
                 emptyBoard="Nenhum SKU em estoque."
                 header={(location) => {
                   const inLocation = countable.filter((item) => item.location_id === location.id);
@@ -804,6 +843,9 @@ export function InventoryPage() {
                 rows={materialRows}
                 expanded={expanded}
                 onToggle={(id) => setExpanded(expanded === id ? null : id)}
+                onReorder={(ids) => {
+                  void saveKanbanColumnOrder(KANBAN_BOARDS.inventoryMaterial, ids);
+                }}
                 emptyBoard="Nenhum material em estoque."
                 header={(_location, cards) => ({
                   units: cards.reduce((sum, row) => sum + row.total, 0),

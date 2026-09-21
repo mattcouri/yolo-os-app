@@ -5,9 +5,11 @@ import { QRCodeSVG } from "qrcode.react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { KanbanColumnHandle, SortableKanbanColumns } from "@/components/kanban-sortable-columns";
 import { DataTable } from "@/components/ui/data-table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { isSalaTradeLocation, orderedBoxYardLocations } from "@/lib/locations";
+import { applySavedColumnOrder, KANBAN_BOARDS } from "@/lib/kanban-order";
+import { isFabricaLocation, locationStoresKind, orderedBoxYardLocations } from "@/lib/locations";
 import {
   TRANSIT_COLUMN,
   boxColumnId,
@@ -84,14 +86,14 @@ type BoxRow = Asset & {
 };
 
 function boardColumns(yardLocations: Location[], rows: BoxRow[], allLocations: Location[]) {
-  const factoryId = yardLocations.find((location) => location.system_key === "asset_factory")?.id;
+  const factoryId = yardLocations.find((location) => isFabricaLocation(location))?.id;
   const yardIds = yardLocations
     .filter((location) => location.id !== factoryId)
     .map((location) => location.id);
   const extra = [...new Set(rows.map((row) => row.columnId))].filter((id) => {
     if (!id || id === TRANSIT_COLUMN || id === factoryId || yardIds.includes(id)) return false;
     const location = allLocations.find((item) => item.id === id);
-    return !location || !isSalaTradeLocation(location);
+    return Boolean(location && locationStoresKind(location, "embalagem"));
   });
   return [...yardIds, ...extra, TRANSIT_COLUMN, ...(factoryId ? [factoryId] : [])];
 }
@@ -211,8 +213,18 @@ function buildRows(
 }
 
 export function PackagingPage() {
-  const { assets, stock, products, movements, locations, updateAsset, updateStock, createMovement } =
-    useAppStore();
+  const {
+    assets,
+    stock,
+    products,
+    movements,
+    locations,
+    updateAsset,
+    updateStock,
+    createMovement,
+    kanbanColumnOrders,
+    saveKanbanColumnOrder,
+  } = useAppStore();
   const [filter, setFilter] = useState<FilterId>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -225,8 +237,12 @@ export function PackagingPage() {
     [assets, stock, products, movements, locations]
   );
   const columns = useMemo(
-    () => boardColumns(yardLocations, patio, locations),
-    [yardLocations, patio, locations]
+    () =>
+      applySavedColumnOrder(
+        boardColumns(yardLocations, patio, locations),
+        kanbanColumnOrders[KANBAN_BOARDS.embalagens]
+      ),
+    [yardLocations, patio, locations, kanbanColumnOrders]
   );
   const rows = useMemo(() => patio.filter((row) => matchesFilter(row, filter)), [patio, filter]);
 
@@ -249,7 +265,7 @@ export function PackagingPage() {
       (location) =>
         location.is_active &&
         !seen.has(location.id) &&
-        !isSalaTradeLocation(location) &&
+        locationStoresKind(location, "embalagem") &&
         patio.some((row) => row.columnId === location.id)
     );
     return [...yardLocations, ...extras];
@@ -269,8 +285,8 @@ export function PackagingPage() {
     let status = planned.status;
     const locationId = planned.location_id;
     const dest = locationId ? locations.find((location) => location.id === locationId) : undefined;
-    if (dest && isSalaTradeLocation(dest)) {
-      setError("Embalagens não vão para Sala Trade.");
+    if (dest && !locationStoresKind(dest, "embalagem")) {
+      setError("Este local não guarda embalagens.");
       return;
     }
     if (factory && locationId === factory.id && row.location_id !== factory.id) {
@@ -340,18 +356,23 @@ export function PackagingPage() {
         </p>
       </div>
 
-      <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
-        {columns.map((columnId) => {
+      <SortableKanbanColumns
+        columnIds={columns}
+        onReorder={(ids) => {
+          void saveKanbanColumnOrder(KANBAN_BOARDS.embalagens, ids);
+        }}
+      >
+        {(columnId, handle) => {
           const cards = patio.filter((row) => row.columnId === columnId);
           return (
-            <section
-              key={columnId}
-              className="flex w-[16.5rem] shrink-0 flex-col rounded-xl border bg-muted/30"
-            >
+            <section className="flex w-[16.5rem] flex-col rounded-xl border bg-muted/30">
               <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5">
-                <h2 className="truncate text-sm font-semibold">
-                  {columnId === TRANSIT_COLUMN ? "Em trânsito" : columnLabel(columnId, locations)}
-                </h2>
+                <div className="flex min-w-0 items-center gap-1">
+                  <KanbanColumnHandle attributes={handle.attributes} listeners={handle.listeners} />
+                  <h2 className="truncate text-sm font-semibold">
+                    {columnId === TRANSIT_COLUMN ? "Em trânsito" : columnLabel(columnId, locations)}
+                  </h2>
+                </div>
                 <Badge variant="secondary">{cards.length}</Badge>
               </header>
               <div className="max-h-[28rem] space-y-2 overflow-y-auto p-2">
@@ -365,8 +386,8 @@ export function PackagingPage() {
               </div>
             </section>
           );
-        })}
-      </div>
+        }}
+      </SortableKanbanColumns>
 
       <Card>
         <CardHeader className="pb-3">

@@ -1,15 +1,16 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ExternalLink, Package, Shirt, Wrench } from "lucide-react";
+import { ExternalLink, Wrench } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { KanbanColumnHandle, SortableKanbanColumns } from "@/components/kanban-sortable-columns";
 import { DataTable } from "@/components/ui/data-table";
-import { orderedAssetYardLocations } from "@/lib/locations";
+import { applySavedColumnOrder, KANBAN_BOARDS } from "@/lib/kanban-order";
+import { locationStoresKind, orderedEquipmentYardLocations } from "@/lib/locations";
 import {
   categoryLabel,
-  isBoxAsset,
-  isUniformAsset,
+  isOperationalAsset,
   OPERATIONAL_STATUSES,
   planAssetPlacement,
   resolvedAssetLocationId,
@@ -68,21 +69,7 @@ function statusChipClass(status: AssetStatus) {
   return "border-border bg-muted text-muted-foreground";
 }
 
-function displayStatus(asset: Pick<Asset, "status" | "type">) {
-  if (isBoxAsset(asset)) {
-    const labels: Partial<Record<AssetStatus, string>> = {
-      available: "Vazia",
-      cleaning: "Limpeza",
-      empty_ready_return: "Pronta p/ fábrica",
-      at_factory: "Na fábrica",
-      in_transit: "Em trânsito",
-      with_product: "Cheia",
-      in_use: "Em uso",
-      inspection: "Inspeção",
-      damaged: "Danificada",
-    };
-    return labels[asset.status] || statusLabel(asset.status);
-  }
+function displayStatus(asset: Pick<Asset, "status">) {
   return statusLabel(asset.status);
 }
 
@@ -92,7 +79,7 @@ type PatioRow = Asset & {
   statusLabel: string;
   search: string;
   orderLabel: string;
-  kind: "equipamento" | "uniforme" | "caixa";
+  kind: "equipamento";
   editable: boolean;
 };
 
@@ -110,27 +97,12 @@ function columnTitle(columnId: string, yardLocations: Location[]) {
   return yardLocations.find((location) => location.id === columnId)?.name || "Local";
 }
 
-function boxTypeLabel(type: Asset["type"]) {
-  if (type === "caixa_preta") return "Caixa preta";
-  if (type === "caixa_media") return "Caixa média";
-  if (type === "caixa_grande") return "Caixa grande";
-  return "Caixa";
-}
-
-function patioKind(asset: Pick<Asset, "type" | "category">): PatioRow["kind"] {
-  if (isBoxAsset(asset)) return "caixa";
-  if (asset.category === "uniforme") return "uniforme";
-  return "equipamento";
-}
-
 function patioCategory(asset: Pick<Asset, "type" | "category">) {
-  if (isBoxAsset(asset)) return boxTypeLabel(asset.type);
   return categoryLabel(asset.category || asset.type);
 }
 
 function PatioCard({ row }: { row: PatioRow }) {
   const photo = row.photo_url;
-  const Placeholder = row.kind === "uniforme" ? Shirt : row.kind === "caixa" ? Package : Wrench;
   const body = (
     <>
       <div className="relative aspect-[4/3] overflow-hidden bg-muted">
@@ -138,7 +110,7 @@ function PatioCard({ row }: { row: PatioRow }) {
           <img src={photo} alt="" className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full w-full items-center justify-center">
-            <Placeholder className="h-8 w-8 text-muted-foreground/70" />
+            <Wrench className="h-8 w-8 text-muted-foreground/70" />
           </div>
         )}
         <span
@@ -185,19 +157,19 @@ export function AtivosPage() {
     locations,
     orders,
     equipmentReservations,
-    uniforms,
-    uniformCheckouts,
     updateAsset,
     createMovement,
+    kanbanColumnOrders,
+    saveKanbanColumnOrder,
   } = useAppStore();
   const [filter, setFilter] = useState<FilterId>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const yardLocations = useMemo(() => orderedAssetYardLocations(locations), [locations]);
+  const yardLocations = useMemo(() => orderedEquipmentYardLocations(locations), [locations]);
 
   const operational = useMemo(
-    () => assets.filter((asset) => asset.is_active !== false),
+    () => assets.filter((asset) => asset.is_active !== false && isOperationalAsset(asset)),
     [assets]
   );
 
@@ -211,79 +183,33 @@ export function AtivosPage() {
   }, [equipmentReservations]);
 
   const patio = useMemo<PatioRow[]>(() => {
-    const equipment: PatioRow[] = operational.filter((asset) => !isUniformAsset(asset)).map((asset) => {
+    return operational.map((asset) => {
       const resolvedId = resolvedAssetLocationId(asset, locations);
       const locationName = OUT_STATUSES.has(asset.status)
         ? "Na rua"
         : locations.find((location) => location.id === resolvedId)?.name || "—";
       const category = patioCategory(asset);
-      const kind = patioKind(asset);
       const reservation = reservationByAsset.get(asset.id);
       const order = reservation?.orderId
         ? orders.find((item) => item.id === reservation.orderId)
-        : asset.category === "uniforme"
-          ? orders.find((item) => asset.description?.includes(item.order_number))
-          : undefined;
-      const orderLabel = order
-        ? order.order_number
-        : reservation
-          ? reservation.holder
-          : "";
+        : undefined;
+      const orderLabel = order ? order.order_number : reservation ? reservation.holder : "";
       return {
         ...asset,
         locationName,
         categoryLabel: category,
         statusLabel: displayStatus(asset),
         orderLabel,
-        kind,
-        editable: kind !== "caixa",
+        kind: "equipamento" as const,
+        editable: true,
         search: [asset.code, asset.name, category, locationName, displayStatus(asset), orderLabel]
           .join(" ")
           .toLowerCase(),
       };
     });
+  }, [operational, locations, reservationByAsset, orders]);
 
-    const uniformsOut: PatioRow[] = [];
-    for (const checkout of uniformCheckouts) {
-      if (checkout.status !== "out") continue;
-      const order = orders.find((item) => item.id === checkout.order_id);
-      if (!order || order.status === "cancelled" || order.status === "retorno" || order.status === "completed") {
-        continue;
-      }
-      const uniform = uniforms.find((item) => item.id === checkout.uniform_id);
-      const qty = Math.max(1, checkout.quantity);
-      for (let index = 0; index < qty; index += 1) {
-        const base = `${uniform?.name || "Uniforme"} · ${checkout.size}`;
-        const name = qty > 1 ? `${base} · ${index + 1}/${qty}` : base;
-        const code = qty > 1 ? `UNI-${checkout.size}-${index + 1}` : `UNI-${checkout.size}`;
-        uniformsOut.push({
-          id: `${checkout.id}:${index}`,
-          code,
-          name,
-          type: "other",
-          location_id: null,
-          status: "in_use",
-          is_active: true,
-          created_at: checkout.created_at,
-          updated_at: checkout.created_at,
-          last_moved_at: checkout.checked_out_at,
-          category: "uniforme",
-          photo_url: uniform?.photo_url || null,
-          locationName: "Na rua",
-          categoryLabel: "Uniforme",
-          statusLabel: statusLabel("in_use"),
-          orderLabel: order.order_number,
-          kind: "uniforme",
-          editable: false,
-          search: [code, name, "uniforme", "na rua", order.order_number].join(" ").toLowerCase(),
-        });
-      }
-    }
-
-    return [...equipment, ...uniformsOut];
-  }, [operational, locations, reservationByAsset, orders, uniforms, uniformCheckouts]);
-
-  const listPatio = useMemo(() => patio.filter((row) => row.kind !== "caixa"), [patio]);
+  const listPatio = patio;
 
   const counts = useMemo(
     () => ({
@@ -297,7 +223,14 @@ export function AtivosPage() {
     [listPatio]
   );
 
-  const columns = useMemo(() => boardColumns(yardLocations, patio), [yardLocations, patio]);
+  const columns = useMemo(
+    () =>
+      applySavedColumnOrder(
+        boardColumns(yardLocations, patio),
+        kanbanColumnOrders[KANBAN_BOARDS.ativos]
+      ),
+    [yardLocations, patio, kanbanColumnOrders]
+  );
 
   const rows = useMemo(
     () => listPatio.filter((row) => matchesFilter(row.status, filter)),
@@ -310,6 +243,13 @@ export function AtivosPage() {
     const planned = planAssetPlacement(asset, change, locations, Boolean(reservation));
     if (planned.error) {
       setError(planned.error);
+      return;
+    }
+    const dest = planned.location_id
+      ? locations.find((location) => location.id === planned.location_id)
+      : undefined;
+    if (dest && !locationStoresKind(dest, "ativo")) {
+      setError("Este local não guarda ativos.");
       return;
     }
     if (planned.status === asset.status && planned.location_id === asset.location_id) return;
@@ -362,16 +302,21 @@ export function AtivosPage() {
         </p>
       </div>
 
-      <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
-        {columns.map((columnId) => {
+      <SortableKanbanColumns
+        columnIds={columns}
+        onReorder={(ids) => {
+          void saveKanbanColumnOrder(KANBAN_BOARDS.ativos, ids);
+        }}
+      >
+        {(columnId, handle) => {
           const cards = patio.filter((row) => boardColumnId(row, locations) === columnId);
           return (
-            <section
-              key={columnId}
-              className="flex w-[16.5rem] shrink-0 flex-col rounded-xl border bg-muted/30"
-            >
+            <section className="flex w-[16.5rem] flex-col rounded-xl border bg-muted/30">
               <header className="flex items-center justify-between gap-2 border-b px-3 py-2.5">
-                <h2 className="truncate text-sm font-semibold">{columnTitle(columnId, yardLocations)}</h2>
+                <div className="flex min-w-0 items-center gap-1">
+                  <KanbanColumnHandle attributes={handle.attributes} listeners={handle.listeners} />
+                  <h2 className="truncate text-sm font-semibold">{columnTitle(columnId, yardLocations)}</h2>
+                </div>
                 <Badge variant="secondary">{cards.length}</Badge>
               </header>
               <div className="max-h-[28rem] space-y-2 overflow-y-auto p-2">
@@ -383,8 +328,8 @@ export function AtivosPage() {
               </div>
             </section>
           );
-        })}
-      </div>
+        }}
+      </SortableKanbanColumns>
 
       <Card>
         <CardHeader className="pb-3">
