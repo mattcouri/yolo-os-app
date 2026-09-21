@@ -27,6 +27,8 @@ interface DataTableProps<T> {
     header: string;
     width?: string;
     sortable?: boolean;
+    align?: "left" | "center" | "right";
+    cellAlign?: "left" | "center" | "right";
     render?: (item: T) => React.ReactNode;
   }[];
   searchPlaceholder?: string;
@@ -35,6 +37,7 @@ interface DataTableProps<T> {
   maxHeight?: string;
   emptyMessage?: string;
   actions?: (item: T) => React.ReactNode;
+  actionsHeader?: string;
   showRowNumbers?: boolean;
   onReorder?: (items: T[]) => void;
   draggable?: boolean;
@@ -98,7 +101,15 @@ function SortableRow<T extends { id: string }>({
         </td>
       )}
       {columns.map((col) => (
-        <td key={col.key} className={cn("h-11 px-3", col.width)}>
+        <td
+          key={col.key}
+          className={cn(
+            "h-11 px-3",
+            col.width,
+            (col.cellAlign ?? col.align) === "center" && "text-center",
+            (col.cellAlign ?? col.align) === "right" && "text-right"
+          )}
+        >
           {col.render
             ? col.render(item)
             : String((item as Record<string, unknown>)[col.key] ?? "")}
@@ -120,6 +131,7 @@ export function DataTable<T extends { id: string }>({
   maxHeight = "400px",
   emptyMessage = "Nenhum item encontrado.",
   actions,
+  actionsHeader = "Ações",
   showRowNumbers = true,
   onReorder,
   draggable = false,
@@ -248,21 +260,28 @@ export function DataTable<T extends { id: string }>({
                   <th
                     key={col.key}
                     className={cn(
-                      "h-9 px-3 text-left font-medium text-muted-foreground",
+                      "h-9 px-3 font-medium text-muted-foreground whitespace-nowrap",
+                      col.align === "center" ? "text-center" : col.align === "right" ? "text-right" : "text-left",
                       col.width,
                       col.sortable !== false && "cursor-pointer hover:text-foreground select-none"
                     )}
                     onClick={() => col.sortable !== false && handleSort(col.key)}
                   >
-                    <div className="flex items-center">
+                    <div
+                      className={cn(
+                        "flex items-center",
+                        col.align === "center" && "justify-center",
+                        col.align === "right" && "justify-end"
+                      )}
+                    >
                       {col.header}
                       {col.sortable !== false && getSortIcon(col.key)}
                     </div>
                   </th>
                 ))}
                 {actions && (
-                  <th className="h-9 px-3 text-right font-medium text-muted-foreground whitespace-nowrap">
-                    Ações
+                  <th className="h-9 px-3 text-center font-medium text-muted-foreground whitespace-nowrap">
+                    {actionsHeader}
                   </th>
                 )}
               </tr>
@@ -319,14 +338,22 @@ export function DataTable<T extends { id: string }>({
                       </td>
                     )}
                     {columns.map((col) => (
-                      <td key={col.key} className={cn("h-11 px-3", col.width)}>
+                      <td
+                        key={col.key}
+                        className={cn(
+                          "h-11 px-3",
+                          col.width,
+                          (col.cellAlign ?? col.align) === "center" && "text-center",
+                          (col.cellAlign ?? col.align) === "right" && "text-right"
+                        )}
+                      >
                         {col.render
                           ? col.render(item)
                           : String((item as Record<string, unknown>)[col.key] ?? "")}
                       </td>
                     ))}
                     {actions && (
-                      <td className="h-11 px-3 text-right whitespace-nowrap">{actions(item)}</td>
+                      <td className="h-11 px-3 text-center whitespace-nowrap">{actions(item)}</td>
                     )}
                   </tr>
                 ))

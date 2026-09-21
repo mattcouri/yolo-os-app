@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataTable } from "@/components/ui/data-table";
 import { useAuthProfile } from "@/lib/auth";
 import { useAppStore } from "@/stores";
-import { assembledLocation, isAssemblyBox, leafUnits, stockLeafUnits } from "@/lib/assembly";
+import { assembledLocation, isAssemblyBox, stockLeafUnits } from "@/lib/assembly";
 import { productStockLocations } from "@/lib/locations";
 import type { Asset, Location, MaterialStock, Product, ProductComponent, Stock } from "@/types/database";
 
@@ -238,13 +238,12 @@ type SkuTotalRow = {
   id: string;
   sku: string;
   name: string;
+  flavor: string;
+  format: string | null;
   kind: "Individual" | "Composto";
   isComposite: boolean;
   quantity: number;
-  pops: number;
-  liquid: number;
-  frozen: number;
-  locations: string;
+  baseQuantity: number;
   search: string;
 };
 
@@ -254,39 +253,29 @@ function liveSkuStock(item: Stock) {
 
 function buildSkuTotals(
   products: Product[],
-  locations: Location[],
-  stock: Stock[],
-  components: ProductComponent[]
+  stock: Stock[]
 ): SkuTotalRow[] {
-  const locationName = (id: string) => locations.find((row) => row.id === id)?.name || "—";
   return products
     .filter((product) => product.kind === "pop")
     .filter((product) => product.is_active || stock.some((item) => item.product_id === product.id && liveSkuStock(item)))
     .map((product) => {
       const rows = stock.filter((item) => item.product_id === product.id && liveSkuStock(item));
       const quantity = rows.reduce((sum, item) => sum + item.quantity, 0);
-      const liquid = rows
-        .filter((item) => item.physical_state !== "frozen")
-        .reduce((sum, item) => sum + item.quantity, 0);
-      const frozen = rows
-        .filter((item) => item.physical_state === "frozen")
-        .reduce((sum, item) => sum + item.quantity, 0);
-      const pops = quantity * leafUnits(product.id, products, components);
-      const locNames = [...new Set(rows.map((item) => locationName(item.location_id)))].join(", ");
       const kind: SkuTotalRow["kind"] = product.is_composite ? "Composto" : "Individual";
-      const name = product.flavor || product.name;
+      const flavor = product.flavor?.trim() || "—";
+      const name = product.name || "—";
+      const format = product.format || null;
       return {
         id: product.id,
         sku: product.code,
         name,
+        flavor,
+        format,
         kind,
         isComposite: product.is_composite,
         quantity,
-        pops,
-        liquid,
-        frozen,
-        locations: locNames || "—",
-        search: `${product.code} ${name} ${kind} ${locNames}`.toLowerCase(),
+        baseQuantity: product.base_quantity || 1,
+        search: `${product.code} ${name} ${flavor} ${kind} ${format || ""}`.toLowerCase(),
       };
     })
     .sort(
@@ -313,44 +302,29 @@ function SkuQuantityCell({
   if (!canEdit) return <span>{row.quantity.toLocaleString("pt-BR")}</span>;
   const dirty = draft !== String(row.quantity);
   return (
-    <div className="flex items-center justify-end gap-1">
-      <Input
-        type="number"
-        min={0}
-        step={1}
-        className="h-7 w-[5.5rem] text-right text-xs"
-        value={draft}
-        disabled={saving}
-        onChange={(event) => onDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && dirty) onSave();
-        }}
-      />
-      <Button
-        type="button"
-        variant={dirty ? "default" : "ghost"}
-        size="sm"
-        className="h-7 px-2 text-xs"
-        disabled={!dirty || saving}
-        onClick={onSave}
-      >
-        {saving ? "…" : "Salvar"}
-      </Button>
-    </div>
+    <Input
+      type="number"
+      min={0}
+      step={1}
+      className="mx-auto h-7 w-[5.5rem] text-center text-xs"
+      value={draft}
+      disabled={saving}
+      onChange={(event) => onDraft(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && dirty) onSave();
+      }}
+    />
   );
 }
 
 function SkuTotalsTable() {
-  const { products, locations, stock, productComponents, adjustSkuQuantity } = useAppStore();
+  const { products, stock, adjustSkuQuantity } = useAppStore();
   const { isAdmin } = useAuthProfile();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const rows = useMemo(
-    () => buildSkuTotals(products, locations, stock, productComponents),
-    [products, locations, stock, productComponents]
-  );
+  const rows = useMemo(() => buildSkuTotals(products, stock), [products, stock]);
 
   const save = async (row: SkuTotalRow) => {
     const raw = drafts[row.id] ?? String(row.quantity);
@@ -392,29 +366,81 @@ function SkuTotalsTable() {
         <DataTable
           data={rows}
           searchKey="search"
-          searchPlaceholder="Buscar SKU, sabor ou tipo…"
+          searchPlaceholder="Buscar SKU, produto, sabor ou tipo…"
           emptyMessage="Nenhum SKU cadastrado."
           maxHeight="calc(100vh - 280px)"
+          actionsHeader="Salvar"
           columns={[
             {
               key: "sku",
               header: "SKU",
               width: "w-28",
+              align: "center",
               sortable: true,
               render: (row) => <span className="font-mono text-xs">{row.sku}</span>,
             },
-            { key: "name", header: "Produto", sortable: true },
+            {
+              key: "name",
+              header: "Nome do Produto",
+              align: "center",
+              cellAlign: "left",
+              sortable: true,
+              render: (row) => (
+                <span className="inline-block max-w-[12rem] truncate align-middle" title={row.name}>
+                  {row.name}
+                </span>
+              ),
+            },
+            {
+              key: "format",
+              header: "Formato",
+              width: "w-32",
+              align: "center",
+              sortable: true,
+              render: (row) => {
+                const isCongelado = row.format === "congelado";
+                const isLiquido = row.format === "liquido";
+                if (!row.format) return <span className="text-muted-foreground">—</span>;
+                return (
+                  <Badge
+                    variant="secondary"
+                    className={`text-xs font-normal ${
+                      isCongelado
+                        ? "bg-sky-100 text-sky-700 hover:bg-sky-100"
+                        : isLiquido
+                          ? "bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-100"
+                          : ""
+                    }`}
+                  >
+                    {isCongelado && <Snowflake className="mr-1 h-3 w-3" />}
+                    {isLiquido && <Droplets className="mr-1 h-3 w-3" />}
+                    {isCongelado ? "Congelado" : isLiquido ? "Líquido" : row.format}
+                  </Badge>
+                );
+              },
+            },
+            {
+              key: "flavor",
+              header: "Sabor",
+              width: "w-32",
+              align: "center",
+              sortable: true,
+            },
             {
               key: "kind",
               header: "Tipo",
               width: "w-28",
+              align: "center",
               sortable: true,
-              render: (row) => <Badge variant={row.isComposite ? "secondary" : "outline"}>{row.kind}</Badge>,
+              render: (row) => (
+                <Badge variant={row.isComposite ? "secondary" : "outline"}>{row.kind}</Badge>
+              ),
             },
             {
               key: "quantity",
-              header: "Qtd",
-              width: isAdmin ? "w-44" : "w-20",
+              header: "Qtd de estoque",
+              width: "w-32",
+              align: "center",
               sortable: true,
               render: (row) => (
                 <SkuQuantityCell
@@ -428,29 +454,35 @@ function SkuTotalsTable() {
               ),
             },
             {
-              key: "pops",
-              header: "Pops",
-              width: "w-20",
+              key: "baseQuantity",
+              header: "Qtd base",
+              width: "w-24",
+              align: "center",
               sortable: true,
-              render: (row) => qtyCell(row.pops),
-            },
-            {
-              key: "liquid",
-              header: "Estado",
-              width: "w-28",
-              render: (row) => (row.quantity > 0 ? stateLabel(row.liquid, row.frozen) : "—"),
-            },
-            {
-              key: "locations",
-              header: "Locais",
-              sortable: true,
-              render: (row) => (
-                <span className="truncate text-xs text-muted-foreground" title={row.locations}>
-                  {row.locations}
-                </span>
-              ),
+              render: (row) => row.baseQuantity.toLocaleString("pt-BR"),
             },
           ]}
+          actions={
+            isAdmin
+              ? (row) => {
+                  const draft = drafts[row.id] ?? String(row.quantity);
+                  const dirty = draft !== String(row.quantity);
+                  const saving = savingId === row.id;
+                  return (
+                    <Button
+                      type="button"
+                      variant={dirty ? "default" : "ghost"}
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={!dirty || saving}
+                      onClick={() => void save(row)}
+                    >
+                      {saving ? "…" : "Salvar"}
+                    </Button>
+                  );
+                }
+              : undefined
+          }
         />
       </CardContent>
     </Card>
