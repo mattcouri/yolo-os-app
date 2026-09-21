@@ -45,12 +45,12 @@ export function isAssemblyBox(stock: Stock) {
   return Boolean(stock.is_active_separation);
 }
 
-export function findAssemblyBox(stock: Stock[], productId: string, state: PhysicalState) {
+export function findAssemblyBox(stock: Stock[], productId: string, state?: PhysicalState) {
   return stock.find(
     (item) =>
       item.is_active_separation &&
       item.product_id === productId &&
-      physicalStateOf(item) === state
+      (state == null || physicalStateOf(item) === state)
   );
 }
 
@@ -146,7 +146,7 @@ export function bomNeeds(
 export function assembledOnHand(
   stock: Stock[],
   productId: string,
-  state: PhysicalState,
+  state?: PhysicalState,
   locationId?: string | null
 ) {
   return stock
@@ -154,7 +154,7 @@ export function assembledOnHand(
       (item) =>
         isLiveStock(item) &&
         item.product_id === productId &&
-        physicalStateOf(item) === state &&
+        (state == null || physicalStateOf(item) === state) &&
         (!locationId || item.location_id === locationId)
     )
     .reduce((sum, item) => sum + item.quantity, 0);

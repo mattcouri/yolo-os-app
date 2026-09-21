@@ -20,7 +20,7 @@ import { useAppStore } from "@/stores";
 import type { PhysicalState, Product } from "@/types/database";
 
 function productLabel(product?: Product | null) {
-  return product?.flavor || product?.name || "SKU";
+  return product?.name || product?.code || "SKU";
 }
 
 export function AssemblePage() {
@@ -30,6 +30,7 @@ export function AssemblePage() {
     productComponents,
     assets,
     locations,
+    materialStock,
     assembleSku,
     unbuildSku,
     fetchProductComponents,
@@ -44,7 +45,6 @@ export function AssemblePage() {
   const [saving, setSaving] = useState(false);
   const [skuId, setSkuId] = useState("");
   const [skuQty, setSkuQty] = useState("1");
-  const [skuState, setSkuState] = useState<PhysicalState>("liquid");
   const [unbuildId, setUnbuildId] = useState("");
   const [unbuildQty, setUnbuildQty] = useState("1");
 
@@ -84,17 +84,32 @@ export function AssemblePage() {
     try {
       return bomNeeds(selectedSku.id, qty, products, productComponents).map((need) => {
         const child = products.find((product) => product.id === need.productId);
-        const box = need.kind === "unit" ? findAssemblyBox(stock, need.productId, skuState) : null;
+        const box = need.kind === "unit" ? findAssemblyBox(stock, need.productId) : null;
         const onHand =
-          need.kind === "composite"
-            ? assembledOnHand(stock, need.productId, skuState, assembled?.id)
-            : box?.quantity || 0;
+          need.kind === "material"
+            ? materialStock
+                .filter((item) => {
+                  const matchesId = item.product_id === need.productId;
+                  const matchesCode = child?.code
+                    ? products.some(
+                        (product) =>
+                          product.id === item.product_id &&
+                          product.kind === "material" &&
+                          product.code === child.code
+                      )
+                    : false;
+                  return (matchesId || matchesCode) && item.quantity > 0 && item.status !== "blocked";
+                })
+                .reduce((sum, item) => sum + item.quantity, 0)
+            : need.kind === "composite"
+              ? assembledOnHand(stock, need.productId, undefined, assembled?.id)
+              : box?.quantity || 0;
         return { need, child, onHand };
       });
     } catch {
       return [];
     }
-  }, [selectedSku, skuQty, products, productComponents, stock, skuState, assembled?.id]);
+  }, [selectedSku, skuQty, products, productComponents, stock, materialStock, assembled?.id]);
 
   const run = async (action: () => Promise<void>, ok: string) => {
     setError("");
@@ -197,17 +212,17 @@ export function AssemblePage() {
               />
             </div>
           </div>
-          <div className="flex gap-2">
-            <StateButton state="liquid" current={skuState} onClick={setSkuState} />
-            <StateButton state="frozen" current={skuState} onClick={setSkuState} />
-          </div>
           {selectedNeeds.length > 0 && (
             <ul className="text-sm space-y-1 rounded-lg bg-muted/60 p-3">
               {selectedNeeds.map(({ need, child, onHand }) => (
                 <li key={need.productId} className="flex justify-between gap-2">
                   <span>
                     {need.quantity} × {child?.code} · {productLabel(child)}
-                    {need.kind === "unit" ? " (caixa de montagem)" : need.kind === "composite" ? " (montados)" : ""}
+                    {need.kind === "unit"
+                      ? " (caixa de montagem)"
+                      : need.kind === "composite"
+                        ? " (montados)"
+                        : " (materiais)"}
                   </span>
                   <span className={onHand < need.quantity ? "text-destructive" : "text-muted-foreground"}>
                     tem {onHand}
@@ -222,7 +237,12 @@ export function AssemblePage() {
             disabled={saving || !skuId}
             onClick={() =>
               void run(
-                () => assembleSku(skuId, Number(skuQty), skuState),
+                () => {
+                  const unitNeed = selectedNeeds.find((row) => row.need.kind === "unit");
+                  const box = unitNeed ? findAssemblyBox(stock, unitNeed.need.productId) : undefined;
+                  const state = box ? physicalStateOf(box) : "liquid";
+                  return assembleSku(skuId, Number(skuQty), state);
+                },
                 `${skuQty} × ${selectedSku?.code} em Produtos montados.`
               )
             }
@@ -319,25 +339,3 @@ function StateChip({ state }: { state: PhysicalState }) {
   );
 }
 
-function StateButton({
-  state,
-  current,
-  onClick,
-}: {
-  state: PhysicalState;
-  current: PhysicalState;
-  onClick: (state: PhysicalState) => void;
-}) {
-  const active = current === state;
-  return (
-    <Button
-      type="button"
-      variant={active ? "default" : "outline"}
-      className="h-11 flex-1"
-      onClick={() => onClick(state)}
-    >
-      {state === "frozen" ? <Snowflake className="w-4 h-4 mr-2" /> : <Droplets className="w-4 h-4 mr-2" />}
-      {stateLabel(state)}
-    </Button>
-  );
-}

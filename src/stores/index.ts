@@ -5137,20 +5137,34 @@ export const useAppStore = create<AppState>((set, get) => ({
       const child = state.products.find((item) => item.id === need.productId);
       if (!child) throw new Error('Componente da árvore de produto não encontrado.');
       if (need.kind === 'material') {
-        const row = nextMaterial.find(
-          (item) => item.product_id === need.productId && item.status === 'available' && item.quantity > 0
+        const materialIds = new Set(
+          state.products
+            .filter((item) => item.kind === 'material' && (item.id === need.productId || item.code === child.code))
+            .map((item) => item.id)
         );
-        if (!row || row.quantity < need.quantity) {
-          throw new Error(`Falta ${child.name} (${need.quantity} ${child.unit}) para montar ${product.code}.`);
+        const lots = nextMaterial.filter(
+          (item) => materialIds.has(item.product_id) && item.quantity > 0 && item.status !== 'blocked'
+        );
+        const onHand = lots.reduce((sum, item) => sum + item.quantity, 0);
+        if (onHand < need.quantity) {
+          throw new Error(
+            `Falta ${child.code} (${need.quantity} ${child.unit}; tem ${onHand}) para montar ${product.code}.`
+          );
         }
-        nextMaterial = nextMaterial.map((item) =>
-          item.id === row.id ? { ...item, quantity: item.quantity - need.quantity, updated_at: now } : item
-        );
-        touchedMaterial.add(row.id);
+        let remaining = need.quantity;
+        for (const lot of lots) {
+          if (remaining <= 0) break;
+          const take = Math.min(lot.quantity, remaining);
+          nextMaterial = nextMaterial.map((item) =>
+            item.id === lot.id ? { ...item, quantity: item.quantity - take, updated_at: now } : item
+          );
+          touchedMaterial.add(lot.id);
+          remaining -= take;
+        }
         continue;
       }
       if (need.kind === 'unit') {
-        const box = findAssemblyBox(nextStock, need.productId, physicalState);
+        const box = findAssemblyBox(nextStock, need.productId, physicalState) || findAssemblyBox(nextStock, need.productId);
         const boxAsset = box ? state.assets.find((item) => item.id === box.asset_id) : undefined;
         if (!box || box.quantity <= 0) {
           throw new Error(
