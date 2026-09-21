@@ -17,6 +17,7 @@ import { AtivosPanel } from "@/pages/settings/ativos-panel";
 import { UniformesPanel } from "@/pages/settings/uniformes-panel";
 import { cleanLocation, formatBoxOuterMeasures, isBoxAsset, isUniformAsset } from "@/lib/operational-assets";
 import { assetYardLocations, orderedAssetYardLocations, productStockLocations } from "@/lib/locations";
+import { popBaseQuantity } from "@/lib/assembly";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 const LOCATION_TYPES: Location["type"][] = ["receiving", "storage", "freezer", "shipping", "other"];
@@ -428,41 +429,8 @@ export function SettingsPage() {
     setAllComponents(comps);
   };
 
-  // Recursive function to calculate total base units for a product
-  // For simple products: returns base_quantity (usually 1)
-  // For composite products: sums (child_qty × child's total base units)
-  const calculateTotalBaseUnits = (productId: string, visited: Set<string> = new Set()): number => {
-    // Prevent infinite loops from circular references
-    if (visited.has(productId)) return 0;
-    visited.add(productId);
-
-    const product = products.find(p => p.id === productId);
-    if (!product) return 0;
-
-    // Get components for this product
-    const productComponents = allComponents.filter(c => c.parent_product_id === productId);
-
-    // If no components (simple product), return base_quantity
-    if (productComponents.length === 0) {
-      return product.base_quantity || 1;
-    }
-
-    // For composite products, sum up all children's contributions
-    let total = 0;
-    for (const comp of productComponents) {
-      const childProduct = products.find(p => p.id === comp.child_product_id);
-      if (childProduct) {
-        // Only count SKUs (pops), not materials
-        if (childProduct.kind === "pop") {
-          const childBaseUnits = calculateTotalBaseUnits(comp.child_product_id, new Set(visited));
-          total += comp.quantity * childBaseUnits;
-        }
-        // Materials don't contribute to base unit count
-      }
-    }
-
-    return total > 0 ? total : (product.base_quantity || 1);
-  };
+  const calculateTotalBaseUnits = (productId: string) =>
+    popBaseQuantity(productId, products, allComponents);
 
   useEffect(() => {
     fetchLocations();
@@ -1501,40 +1469,52 @@ export function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="pt-0">
-              <div className="rounded-md border">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b bg-muted/50">
-                      <th className="h-9 px-3 text-left font-medium text-muted-foreground w-20">Classe</th>
-                      <th className="h-9 px-3 text-left font-medium text-muted-foreground">Descrição</th>
-                      <th className="h-9 px-3 text-left font-medium text-muted-foreground">Destino</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr className="border-b hover:bg-muted/30">
-                      <td className="h-10 px-3">
+              <DataTable
+                tableId="gestao-settings-classificacoes"
+                data={[
+                  {
+                    id: "aaa",
+                    grade: "AAA",
+                    description: "Produto premium, sem defeitos visíveis",
+                    destination: "Loja, e-commerce, varejo",
+                  },
+                  {
+                    id: "b",
+                    grade: "B",
+                    description: "Segunda linha, defeitos estéticos leves",
+                    destination: "Eventos, atacado, freezers",
+                  },
+                  {
+                    id: "c",
+                    grade: "C",
+                    description: "Lote fechado, consumo rápido necessário",
+                    destination: "Amostras, equipe, doações",
+                  },
+                ]}
+                columns={[
+                  {
+                    key: "grade",
+                    header: "Classe",
+                    width: "w-20",
+                    render: (item) =>
+                      item.grade === "AAA" ? (
                         <Badge className="bg-emerald-500 text-xs">AAA</Badge>
-                      </td>
-                      <td className="h-10 px-3">Produto premium, sem defeitos visíveis</td>
-                      <td className="h-10 px-3 text-muted-foreground">Loja, e-commerce, varejo</td>
-                    </tr>
-                    <tr className="border-b hover:bg-muted/30">
-                      <td className="h-10 px-3">
+                      ) : item.grade === "B" ? (
                         <Badge className="bg-blue-500 text-white text-xs">B</Badge>
-                      </td>
-                      <td className="h-10 px-3">Segunda linha, defeitos estéticos leves</td>
-                      <td className="h-10 px-3 text-muted-foreground">Eventos, atacado, freezers</td>
-                    </tr>
-                    <tr className="hover:bg-muted/30">
-                      <td className="h-10 px-3">
+                      ) : (
                         <Badge variant="outline" className="text-xs">C</Badge>
-                      </td>
-                      <td className="h-10 px-3">Lote fechado, consumo rápido necessário</td>
-                      <td className="h-10 px-3 text-muted-foreground">Amostras, equipe, doações</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+                      ),
+                  },
+                  { key: "description", header: "Descrição" },
+                  {
+                    key: "destination",
+                    header: "Destino",
+                    render: (item) => (
+                      <span className="text-muted-foreground">{item.destination}</span>
+                    ),
+                  },
+                ]}
+              />
               <p className="text-xs text-muted-foreground mt-3">
                 As classificações são fixas no sistema. Para alterar, entre em contato com o administrador.
               </p>

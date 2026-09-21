@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataTable } from "@/components/ui/data-table";
 import { useAuthProfile } from "@/lib/auth";
 import { useAppStore } from "@/stores";
-import { assembledLocation, isAssemblyBox, stockLeafUnits } from "@/lib/assembly";
+import { assembledLocation, isAssemblyBox, popBaseQuantity, stockPopUnits } from "@/lib/assembly";
 import { productStockLocations } from "@/lib/locations";
 import type { Asset, Location, MaterialStock, Product, ProductComponent, Stock } from "@/types/database";
 
@@ -161,7 +161,7 @@ function buildRows(
     const row = take(item.product_id, item.location_id, "pop");
     const grade = gradeKey(item);
     row.total += item.quantity;
-    row.pops += stockLeafUnits(item, products, components);
+    row.pops += stockPopUnits(item, products, components);
     row.grades[grade] += item.quantity;
     if (item.physical_state === "frozen") row.frozen += item.quantity;
     else row.liquid += item.quantity;
@@ -244,6 +244,7 @@ type SkuTotalRow = {
   isComposite: boolean;
   quantity: number;
   baseQuantity: number;
+  inventoryTotal: number;
   search: string;
 };
 
@@ -253,18 +254,20 @@ function liveSkuStock(item: Stock) {
 
 function buildSkuTotals(
   products: Product[],
-  stock: Stock[]
+  stock: Stock[],
+  components: ProductComponent[]
 ): SkuTotalRow[] {
   return products
     .filter((product) => product.kind === "pop")
     .filter((product) => product.is_active || stock.some((item) => item.product_id === product.id && liveSkuStock(item)))
     .map((product) => {
-      const rows = stock.filter((item) => item.product_id === product.id && liveSkuStock(item));
+      const rows = stock.filter((item) => item.product_id === product.id && isCountablePop(item));
       const quantity = rows.reduce((sum, item) => sum + item.quantity, 0);
       const kind: SkuTotalRow["kind"] = product.is_composite ? "Composto" : "Individual";
       const flavor = product.flavor?.trim() || "—";
       const name = product.name || "—";
       const format = product.format || null;
+      const baseQuantity = popBaseQuantity(product.id, products, components);
       return {
         id: product.id,
         sku: product.code,
@@ -274,7 +277,8 @@ function buildSkuTotals(
         kind,
         isComposite: product.is_composite,
         quantity,
-        baseQuantity: product.base_quantity || 1,
+        baseQuantity,
+        inventoryTotal: quantity * baseQuantity,
         search: `${product.code} ${name} ${flavor} ${kind} ${format || ""}`.toLowerCase(),
       };
     })
@@ -318,13 +322,16 @@ function SkuQuantityCell({
 }
 
 function SkuTotalsTable() {
-  const { products, stock, adjustSkuQuantity } = useAppStore();
+  const { products, stock, productComponents, adjustSkuQuantity } = useAppStore();
   const { isAdmin } = useAuthProfile();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const rows = useMemo(() => buildSkuTotals(products, stock), [products, stock]);
+  const rows = useMemo(
+    () => buildSkuTotals(products, stock, productComponents),
+    [products, stock, productComponents]
+  );
 
   const save = async (row: SkuTotalRow) => {
     const raw = drafts[row.id] ?? String(row.quantity);
@@ -386,9 +393,7 @@ function SkuTotalsTable() {
               cellAlign: "left",
               sortable: true,
               render: (row) => (
-                <span className="inline-block max-w-[12rem] truncate align-middle" title={row.name}>
-                  {row.name}
-                </span>
+                <span className="whitespace-normal break-words">{row.name}</span>
               ),
             },
             {
@@ -460,6 +465,14 @@ function SkuTotalsTable() {
               align: "center",
               sortable: true,
               render: (row) => row.baseQuantity.toLocaleString("pt-BR"),
+            },
+            {
+              key: "inventoryTotal",
+              header: "Inventário total",
+              width: "w-32",
+              align: "center",
+              sortable: true,
+              render: (row) => row.inventoryTotal.toLocaleString("pt-BR"),
             },
           ]}
           actions={
@@ -651,7 +664,7 @@ export function InventoryPage() {
     rows.some((row) => row.kind === "material" && row.locationId === location.id)
   );
   const countable = stock.filter(isCountablePop);
-  const popUnits = (item: Stock) => stockLeafUnits(item, products, productComponents);
+  const popUnits = (item: Stock) => stockPopUnits(item, products, productComponents);
   const totalPops = countable.reduce((sum, item) => sum + popUnits(item), 0);
   const totalFrozen = countable
     .filter((item) => item.physical_state === "frozen")

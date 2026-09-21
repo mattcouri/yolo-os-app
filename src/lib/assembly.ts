@@ -55,6 +55,31 @@ export function isPartialMediaBox(stock: Stock, assets: Asset[]) {
   return capacity > 0 && stock.quantity < capacity;
 }
 
+type BomRow = Pick<ProductComponent, "parent_product_id" | "child_product_id" | "quantity">;
+
+/** Qtd base in pops: individual SKU uses cadastro; composto sums child pops (6, 60, 6480, …). */
+export function popBaseQuantity(
+  productId: string,
+  products: Product[],
+  components: BomRow[],
+  seen = new Set<string>()
+): number {
+  if (seen.has(productId)) return 0;
+  seen.add(productId);
+  const product = products.find((item) => item.id === productId);
+  if (!product) return 0;
+  const bom = components.filter((row) => row.parent_product_id === productId);
+  if (bom.length === 0) return product.base_quantity || 1;
+
+  let total = 0;
+  for (const row of bom) {
+    const child = products.find((item) => item.id === row.child_product_id);
+    if (!child || child.kind !== "pop") continue;
+    total += row.quantity * popBaseQuantity(row.child_product_id, products, components, new Set(seen));
+  }
+  return total > 0 ? total : product.base_quantity || 1;
+}
+
 export function leafUnits(
   productId: string,
   products: Product[],
@@ -76,6 +101,10 @@ export function leafUnits(
 
 export function stockLeafUnits(stock: Stock, products: Product[], components: ProductComponent[]) {
   return stock.quantity * leafUnits(stock.product_id, products, components);
+}
+
+export function stockPopUnits(stock: Stock, products: Product[], components: BomRow[]) {
+  return stock.quantity * popBaseQuantity(stock.product_id, products, components);
 }
 
 export type BomNeedKind = "unit" | "composite" | "material";

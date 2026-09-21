@@ -468,6 +468,12 @@ export type UniformSize = 'P' | 'M' | 'G' | 'GG';
 
 export type AppRole = 'admin' | 'supervisor' | 'user';
 
+export type TableColumnWidths = Record<string, number>;
+
+export interface UiPreferences {
+  tableColumns?: Record<string, TableColumnWidths>;
+}
+
 export interface Profile {
   id: string;
   full_name: string;
@@ -477,6 +483,7 @@ export interface Profile {
   created_at: string;
   updated_at: string;
   last_sign_in_at?: string | null;
+  ui_preferences?: UiPreferences | null;
 }
 
 export interface Uniform {
