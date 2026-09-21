@@ -333,14 +333,22 @@ async function saveUniformStock(prev: UniformStock[], next: UniformStock[]) {
     const old = prev.find((item) => item.id === row.id);
     return !old || old.quantity !== row.quantity || old.location_id !== row.location_id;
   });
-  if (deleted.length) {
-    const result = await supabase.from('uniform_stock').delete().in('id', deleted);
-    if (result.error && !missingRelation(result.error.message)) throw new Error(result.error.message);
-  }
-  if (upserts.length) {
-    const result = await supabase.from('uniform_stock').upsert(upserts);
-    if (result.error && !missingRelation(result.error.message)) throw new Error(result.error.message);
-  }
+  const run = async () => {
+    if (deleted.length) {
+      const result = await supabase.from('uniform_stock').delete().in('id', deleted);
+      if (result.error && !missingRelation(result.error.message)) throw new Error(result.error.message);
+    }
+    if (upserts.length) {
+      const result = await supabase.from('uniform_stock').upsert(upserts, {
+        onConflict: 'uniform_id,size,location_id',
+      });
+      if (result.error && !missingRelation(result.error.message)) throw new Error(result.error.message);
+    }
+  };
+  await Promise.race([
+    run(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao gravar pátio de uniformes.')), 8000)),
+  ]);
 }
 
 function deductStockForLines(
@@ -583,7 +591,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       state.fetchUniforms(),
       state.fetchVehicles(),
     ]);
-    await get().seedUniformStockIfNeeded();
+    void get().seedUniformStockIfNeeded();
     const next = get();
     rememberCodes(next.receipts.map((row) => row.receipt_number));
     rememberCodes(next.stock.map((row) => row.stock_number));
@@ -3827,18 +3835,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   fetchUniforms: async () => {
     if (!isSupabaseConfigured || !supabase) return;
     const { data: uniforms, error } = await supabase.from('uniforms').select('*').order('name');
-    const { data: checkouts } = await supabase.from('uniform_checkouts').select('*').order('checked_out_at', { ascending: false });
-    const stockResult = await supabase.from('uniform_stock').select('*');
     if (error) {
       set({ error: error.message });
       return;
     }
+    const { data: checkouts } = await supabase.from('uniform_checkouts').select('*').order('checked_out_at', { ascending: false });
+    set({ uniforms: uniforms || [], uniformCheckouts: checkouts || [] });
+    const stockResult = await supabase.from('uniform_stock').select('*');
     const stock =
-      stockResult.error && missingRelation(stockResult.error.message) ? [] : stockResult.error ? [] : stockResult.data || [];
+      stockResult.error && missingRelation(stockResult.error.message)
+        ? []
+        : stockResult.error
+          ? []
+          : stockResult.data || [];
     if (stockResult.error && !missingRelation(stockResult.error.message)) {
       set({ error: stockResult.error.message });
     }
-    set({ uniforms: uniforms || [], uniformCheckouts: checkouts || [], uniformStock: stock });
+    set({ uniformStock: stock });
   },
 
   seedUniformStockIfNeeded: async () => {
@@ -4028,8 +4041,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         salaTradeId(get().locations),
         UNIFORM_SIZES.map((size) => ({ uniform_id: created.id, size, quantity: totalForSize(created, size) }))
       );
-      await saveUniformStock(get().uniformStock, stock);
       set((s) => ({ uniforms: [...s.uniforms, created], uniformStock: stock }));
+      void saveUniformStock(get().uniformStock, stock).catch(() => undefined);
       return created;
     }
     const stock = addStockForLines(
@@ -4070,8 +4083,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           );
         }
       }
-      await saveUniformStock(get().uniformStock, stock);
       set({ uniformStock: stock });
+      void saveUniformStock(get().uniformStock, stock).catch(() => undefined);
     }
   },
 
