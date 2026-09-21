@@ -386,6 +386,7 @@ export interface Order {
   fulfillment: FulfillmentMethod;
   pickup_fulfillment: FulfillmentMethod | null;
   address: string | null;
+  pickup_address: string | null;
   event_name: string | null;
   event_start: string | null;
   event_end: string | null;

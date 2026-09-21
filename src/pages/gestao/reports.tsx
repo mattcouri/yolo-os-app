@@ -30,6 +30,7 @@ type HistoryRow = {
   closedAt: string;
   closedSort: string;
   items: string;
+  estoque: string;
   retorno: string;
   search: string;
 };
@@ -99,6 +100,15 @@ function buildHistoryRows(
           return itemLine(item, line?.returned);
         })
         .join(" · ");
+      const estoque =
+        close?.sku_deductions
+          ?.map((row) => `${row.name} · ${row.quantity} ${row.unit} baixados`)
+          .join(" · ") ||
+        items
+          .filter((item) => item.product_id && !item.asset_id && !item.code.startsWith("UNI-"))
+          .map((item) => `${item.name} · ${item.quantity} ${item.unit}`)
+          .join(" · ") ||
+        "—";
       const returnable = items.filter((item) => item.is_returnable);
       const returned = close
         ? close.lines.reduce((sum, line) => sum + line.returned, 0)
@@ -122,6 +132,7 @@ function buildHistoryRows(
         closedAt: closed ? formatEventDay(closed) : "—",
         closedSort: closed?.toISOString() || order.updated_at || "",
         items: itemText || "—",
+        estoque,
         retorno,
         search: [
           order.order_number,
@@ -130,6 +141,7 @@ function buildHistoryRows(
           order.recipient_name,
           locationSummary(order, items),
           itemText,
+          estoque,
         ]
           .filter(Boolean)
           .join(" ")
@@ -289,6 +301,15 @@ export function ReportsPage() {
                 render: (row: HistoryRow) => (
                   <p className="max-w-xs truncate text-xs text-muted-foreground" title={row.items}>
                     {row.items}
+                  </p>
+                ),
+              },
+              {
+                key: "estoque",
+                header: "Estoque SKU",
+                render: (row: HistoryRow) => (
+                  <p className="max-w-xs truncate text-xs text-muted-foreground" title={row.estoque}>
+                    {row.estoque}
                   </p>
                 ),
               },

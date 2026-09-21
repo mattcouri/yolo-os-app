@@ -330,8 +330,11 @@ export function tripSummary(order: Order, items: OrderItem[] = []) {
 export function locationSummary(order: Order, items: OrderItem[] = []) {
   const hasReturn = needsPickup(order, items);
   const pickupMethod = resolvedPickupFulfillment(order, items);
-  if (needsOrderAddress(order.fulfillment, pickupMethod, hasReturn) && order.address?.trim()) {
-    return order.address.trim();
+  if (needsOrderAddress(order.fulfillment, pickupMethod, hasReturn)) {
+    const outbound = isYoloTrip(order.fulfillment) ? order.address?.trim() : "";
+    const inbound = hasReturn && isYoloTrip(pickupMethod) ? order.pickup_address?.trim() || (!outbound ? order.address?.trim() : "") : "";
+    if (outbound && inbound && outbound !== inbound) return `${outbound} · ${inbound}`;
+    return outbound || inbound || "";
   }
   const parts: string[] = [];
   if (order.fulfillment === "uso_interno") parts.push("Uso interno");
@@ -395,6 +398,15 @@ export interface ReturnUnit {
   unit_index: number;
   condition: ReturnUnitCondition;
   location_id: string | null;
+  notes?: string | null;
+  photo_url?: string | null;
+}
+
+export interface SkuDeduction {
+  product_id: string;
+  name: string;
+  quantity: number;
+  unit: string;
 }
 
 export interface CloseOutRecord {
@@ -402,13 +414,13 @@ export interface CloseOutRecord {
   notes?: string;
   lines: ReturnLine[];
   units?: ReturnUnit[];
+  sku_deductions?: SkuDeduction[];
 }
 
 export const RETURN_UNIT_CONDITIONS: { value: ReturnUnitCondition; label: string; hint: string }[] = [
   { value: "ok", label: "OK", hint: "Voltou em ordem" },
   { value: "cleaning", label: "Limpar", hint: "Voltou sujo" },
-  { value: "inspection", label: "Inspeção", hint: "Conferir depois" },
-  { value: "damaged", label: "Danificado", hint: "Quebrou ou rasgou" },
+  { value: "damaged", label: "Danificado", hint: "Quebrou, riscou, rasgou etc..." },
   { value: "lost", label: "Não voltou", hint: "Ficou na rua" },
 ];
 

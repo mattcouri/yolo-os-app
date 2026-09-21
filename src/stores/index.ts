@@ -274,6 +274,7 @@ interface CreateOrderData {
   fulfillment: FulfillmentMethod;
   pickup_fulfillment?: FulfillmentMethod;
   address?: string;
+  pickup_address?: string;
   event_name?: string;
   event_start?: string;
   event_end?: string;
@@ -454,6 +455,36 @@ const generateFillNumber = () => allocateCode('ENV', 4);
 const generateMovementNumber = () => allocateCode('MOV', 4);
 const generateOrderNumber = () => allocateCode('PED', 4);
 const generateCountNumber = () => allocateCode('INV', 3);
+
+async function rememberRemoteMovementNumbers() {
+  if (!isSupabaseConfigured || !supabase) return;
+  const page = 1000;
+  for (let from = 0; from < 50000; from += page) {
+    const { data, error } = await supabase
+      .from('movements')
+      .select('movement_number')
+      .range(from, from + page - 1);
+    if (error) break;
+    rememberCodes((data || []).map((row) => row.movement_number));
+    if (!data || data.length < page) break;
+  }
+}
+
+async function persistMovements(rows: Movement[]) {
+  if (!rows.length || !isSupabaseConfigured || !supabase) return;
+  await rememberRemoteMovementNumbers();
+  for (const movement of rows) {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const { error } = await supabase.from('movements').insert(movement);
+      if (!error) break;
+      if (!/movement_number|duplicate key|unique/i.test(error.message) || attempt === 11) {
+        throw new Error(error.message);
+      }
+      usedCodes.add(movement.movement_number.toUpperCase());
+      movement.movement_number = generateMovementNumber();
+    }
+  }
+}
 
 async function syncCompositeRestock(
   get: () => AppState,
@@ -1266,7 +1297,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ error: ordersError?.message || itemsError?.message, isLoading: false });
     } else {
       rememberCodes((orders || []).map((row) => row.order_number));
-      set({ orders: orders || [], orderItems: items || [], isLoading: false });
+      set({
+        orders: (orders || []).map((row) => ({ ...row, pickup_address: row.pickup_address ?? null })),
+        orderItems: items || [],
+        isLoading: false,
+      });
     }
   },
   
@@ -1515,7 +1550,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           updated_at: now,
         }).eq('id', id);
       }
-      if (receivingMovements.length) await supabase.from('movements').insert(receivingMovements);
+      await persistMovements(receivingMovements);
     }
     
     set(s => ({
@@ -1769,10 +1804,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }).eq('id', material.id);
         if (materialError) throw new Error(materialError.message);
       }
-      if (newMovements.length) {
-        const { error: movementError } = await supabase.from('movements').insert(newMovements);
-        if (movementError) throw new Error(movementError.message);
-      }
+      await persistMovements(newMovements);
     }
 
     set({
@@ -2004,10 +2036,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { error: insertError } = await supabase.from('material_stock').insert(insertedMaterial);
         if (insertError) throw new Error(insertError.message);
       }
-      if (newMovements.length) {
-        const { error: movementError } = await supabase.from('movements').insert(newMovements);
-        if (movementError) throw new Error(movementError.message);
-      }
+      await persistMovements(newMovements);
     }
 
     set({
@@ -2106,7 +2135,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         await supabase.from('assets').update({ status: 'available', updated_at: now }).in('id', boxIds);
       }
       await supabase.from('receipt_items').delete().eq('receipt_id', id);
-      if (adjustments.length) await supabase.from('movements').insert(adjustments);
+      await persistMovements(adjustments);
       const { error } = await supabase.from('receipts').delete().eq('id', id);
       if (error) throw new Error(error.message);
     }
@@ -2578,7 +2607,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       for (const [id, patch] of assetUpdates) {
         await supabase.from('assets').update({ ...patch, updated_at: now }).eq('id', id);
       }
-      if (newMovements.length) await supabase.from('movements').insert(newMovements);
+      await persistMovements(newMovements);
     }
 
     set({
@@ -2657,6 +2686,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       fulfillment: data.fulfillment,
       pickup_fulfillment: data.pickup_fulfillment || null,
       address: data.address || null,
+      pickup_address: data.pickup_address || null,
       event_name: data.event_name || null,
       event_start: data.event_start || null,
       event_end: data.event_end || null,
@@ -2809,6 +2839,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       fulfillment: data.fulfillment,
       pickup_fulfillment: data.pickup_fulfillment || null,
       address: data.address || null,
+      pickup_address: data.pickup_address || null,
       event_name: data.event_name || null,
       event_start: data.event_start || null,
       event_end: data.event_end || null,
@@ -3030,6 +3061,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         supabase.from('order_items').delete().eq('order_id', orderId),
         supabase.from('order_attachments').delete().eq('order_id', orderId),
         supabase.from('order_events').delete().eq('order_id', orderId),
+        supabase.from('order_return_units').delete().eq('order_id', orderId),
       ];
       const results = await Promise.all(relatedDeletes);
       for (const result of results) {
@@ -3112,6 +3144,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const now = new Date().toISOString();
     rememberCodes(get().stock.map((row) => row.stock_number));
     rememberCodes(get().movements.map((row) => row.movement_number));
+    await rememberRemoteMovementNumbers();
     let nextStock = [...get().stock];
     let nextAssets = [...get().assets];
     const newStock: Stock[] = [];
@@ -3267,10 +3300,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           .eq('id', id);
         if (error) throw new Error(error.message);
       }
-      if (newMovements.length) {
-        const { error } = await supabase.from('movements').insert(newMovements);
-        if (error) throw new Error(error.message);
-      }
+      await persistMovements(newMovements);
     }
 
     set({
@@ -3418,10 +3448,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           .eq('id', id);
         if (error) throw new Error(error.message);
       }
-      if (newMovements.length) {
-        const { error } = await supabase.from('movements').insert(newMovements);
-        if (error) throw new Error(error.message);
-      }
+      await persistMovements(newMovements);
     }
 
     set({
@@ -3540,10 +3567,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           .eq('id', id);
         if (error) throw new Error(error.message);
       }
-      if (newMovements.length) {
-        const { error } = await supabase.from('movements').insert(newMovements);
-        if (error) throw new Error(error.message);
-      }
+      await persistMovements(newMovements);
     }
 
     set({
@@ -3610,11 +3634,131 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const items = get().orderItems.filter((row) => row.order_id === orderId);
     const now = new Date().toISOString();
+    const closeReason = `Fechamento ${order.order_number}`.trim();
+    const sku_deductions: { product_id: string; name: string; quantity: number; unit: string }[] = [];
+
+    const alreadyDispatched = (item: (typeof items)[number]) =>
+      get()
+        .movements.filter(
+          (row) =>
+            row.order_id === orderId &&
+            row.type === 'dispatch' &&
+            row.notes === item.name &&
+            !row.asset_id
+        )
+        .reduce((sum, row) => sum + (row.quantity || 0), 0);
+
+    for (const item of items) {
+      if (!item.product_id || item.asset_id || item.code.startsWith('UNI-')) continue;
+      const product = get().products.find((row) => row.id === item.product_id);
+      let remaining = Math.max(0, item.quantity - alreadyDispatched(item));
+      if (remaining <= 0) continue;
+      const deductQty = remaining;
+      if (product?.kind === 'material') {
+        const lots = get()
+          .materialStock.filter(
+            (row) => row.product_id === item.product_id && row.quantity > 0 && row.status === 'available'
+          )
+          .sort((a, b) => a.created_at.localeCompare(b.created_at));
+        const onHand = lots.reduce((sum, row) => sum + row.quantity, 0);
+        if (onHand < remaining) {
+          throw new Error(
+            `Estoque insuficiente para ${item.name} ${product?.code || item.code} (${remaining} ${item.unit}).`
+          );
+        }
+        for (const lot of lots) {
+          if (remaining <= 0) break;
+          const fresh = get().materialStock.find((row) => row.id === lot.id);
+          if (!fresh || fresh.quantity <= 0) continue;
+          const take = Math.min(fresh.quantity, remaining);
+          await get().updateMaterialStock(fresh.id, { quantity: fresh.quantity - take });
+          await get().createMovement({
+            type: 'dispatch',
+            order_id: orderId,
+            quantity: take,
+            quantity_before: fresh.quantity,
+            quantity_after: fresh.quantity - take,
+            from_location_id: fresh.location_id,
+            reason: closeReason,
+            notes: item.name,
+          });
+          remaining -= take;
+        }
+      } else {
+        const wanted = item.requested_state;
+        const lots = get()
+          .stock.filter(
+            (row) =>
+              row.product_id === item.product_id &&
+              row.quantity > 0 &&
+              row.status === 'available' &&
+              (!wanted || physicalStateOf(row) === wanted)
+          )
+          .sort((a, b) => {
+            if (a.is_active_separation !== b.is_active_separation) return a.is_active_separation ? -1 : 1;
+            return (a.fifo_date || a.created_at).localeCompare(b.fifo_date || b.created_at);
+          });
+        const onHand = lots.reduce((sum, row) => sum + row.quantity, 0);
+        if (onHand < remaining) {
+          throw new Error(
+            `Estoque insuficiente para ${item.name} ${product?.code || item.code} (${remaining} ${item.unit}${wanted === "frozen" ? " · congelado" : wanted === "liquid" ? " · líquido" : ""}).`
+          );
+        }
+        for (const lot of lots) {
+          if (remaining <= 0) break;
+          const fresh = get().stock.find((row) => row.id === lot.id);
+          if (!fresh || fresh.quantity <= 0) continue;
+          const take = Math.min(fresh.quantity, remaining);
+          const left = fresh.quantity - take;
+          await get().updateStock(fresh.id, {
+            quantity: left,
+            status: left > 0 ? fresh.status : 'depleted',
+          });
+          await get().createMovement({
+            type: 'dispatch',
+            stock_id: fresh.id,
+            order_id: orderId,
+            asset_id: fresh.asset_id || undefined,
+            quantity: take,
+            quantity_before: fresh.quantity,
+            quantity_after: left,
+            from_location_id: fresh.location_id,
+            reason: closeReason,
+            notes: item.name,
+          });
+          remaining -= take;
+        }
+      }
+      sku_deductions.push({
+        product_id: item.product_id,
+        name: item.name,
+        quantity: deductQty,
+        unit: item.unit,
+      });
+    }
+
+    if (isSupabaseConfigured && supabase && units.length) {
+      const payload = units.map((unit) => ({
+        order_id: orderId,
+        item_id: unit.item_id,
+        unit_index: unit.unit_index,
+        condition: unit.condition === 'inspection' ? 'ok' : unit.condition,
+        location_id: unit.location_id,
+        notes: unit.notes || null,
+        photo_url: unit.photo_url || null,
+      }));
+      const { error } = await supabase.from('order_return_units').insert(payload);
+      if (error && !/schema cache|does not exist|Could not find the table/i.test(error.message)) {
+        throw new Error(error.message);
+      }
+    }
+
     const closeOut = {
       closed_at: now,
       notes: notes || undefined,
       lines: closeOutLinesFromUnits(items, units),
       units,
+      sku_deductions,
     };
 
     await get().updateOrder(orderId, {
@@ -3790,83 +3934,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         reason,
         notes: `${item.name} · na rua`,
       });
-    } else if (item.product_id) {
-      const product = get().products.find((row) => row.id === item.product_id);
-      let remaining = item.quantity;
-      if (product?.kind === 'material') {
-        const lots = get()
-          .materialStock.filter(
-            (row) =>
-              row.product_id === item.product_id &&
-              row.quantity > 0 &&
-              row.status === 'available'
-          )
-          .sort((a, b) => a.created_at.localeCompare(b.created_at));
-        const onHand = lots.reduce((sum, row) => sum + row.quantity, 0);
-        if (onHand < remaining) {
-          throw new Error(`Estoque insuficiente para ${item.name} (${remaining} ${item.unit}).`);
-        }
-        for (const lot of lots) {
-          if (remaining <= 0) break;
-          const fresh = get().materialStock.find((row) => row.id === lot.id);
-          if (!fresh || fresh.quantity <= 0) continue;
-          const take = Math.min(fresh.quantity, remaining);
-          await get().updateMaterialStock(fresh.id, { quantity: fresh.quantity - take });
-          await get().createMovement({
-            type: 'dispatch',
-            order_id: orderId,
-            quantity: take,
-            quantity_before: fresh.quantity,
-            quantity_after: fresh.quantity - take,
-            from_location_id: fresh.location_id,
-            reason,
-            notes: item.name,
-          });
-          remaining -= take;
-        }
-      } else {
-        const wanted = item.requested_state;
-        const lots = get()
-          .stock.filter(
-            (row) =>
-              row.product_id === item.product_id &&
-              row.quantity > 0 &&
-              row.status === 'available' &&
-              (!wanted || physicalStateOf(row) === wanted)
-          )
-          .sort((a, b) => {
-            if (a.is_active_separation !== b.is_active_separation) return a.is_active_separation ? -1 : 1;
-            return (a.fifo_date || a.created_at).localeCompare(b.fifo_date || b.created_at);
-          });
-        const onHand = lots.reduce((sum, row) => sum + row.quantity, 0);
-        if (onHand < remaining) {
-          throw new Error(`Estoque insuficiente para ${item.name} (${remaining} ${item.unit}).`);
-        }
-        for (const lot of lots) {
-          if (remaining <= 0) break;
-          const fresh = get().stock.find((row) => row.id === lot.id);
-          if (!fresh || fresh.quantity <= 0) continue;
-          const take = Math.min(fresh.quantity, remaining);
-          const left = fresh.quantity - take;
-          await get().updateStock(fresh.id, {
-            quantity: left,
-            status: left > 0 ? fresh.status : 'depleted',
-          });
-          await get().createMovement({
-            type: 'dispatch',
-            stock_id: fresh.id,
-            order_id: orderId,
-            asset_id: fresh.asset_id || undefined,
-            quantity: take,
-            quantity_before: fresh.quantity,
-            quantity_after: left,
-            from_location_id: fresh.location_id,
-            reason,
-            notes: item.name,
-          });
-          remaining -= take;
-        }
-      }
     }
 
     await get().updateOrderItem(itemId, { is_checked: true });
@@ -4451,7 +4518,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           }).eq('id', stock.asset_id);
         }
       }
-      await supabase.from('movements').insert(movements);
+      await persistMovements(movements);
     }
     
     set(s => ({
@@ -4510,8 +4577,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         .update({ status: 'at_factory', location_id: factory.id, last_moved_at: now, updated_at: now })
         .in('id', uniqueIds);
       if (assetError) throw new Error(assetError.message);
-      const { error: movementError } = await supabase.from('movements').insert(movements);
-      if (movementError) throw new Error(movementError.message);
+      await persistMovements(movements);
     }
 
     set((current) => ({
@@ -4564,7 +4630,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         status: newQuantity > 0 ? stock.status : 'depleted',
         updated_at: now 
       }).eq('id', boxId);
-      await supabase.from('movements').insert(movement);
+      await persistMovements([movement]);
     }
     
     set(s => ({
@@ -4671,7 +4737,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           .eq('id', stock.asset_id);
         if (assetError) throw new Error(assetError.message);
       }
-      await supabase.from('movements').insert(movement);
+      await persistMovements([movement]);
     }
     set((current) => ({
       stock: current.stock.map((item) =>
@@ -4902,7 +4968,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           .eq('id', id);
         if (error) throw new Error(error.message);
       }
-      if (newMovements.length) await supabase.from('movements').insert(newMovements);
+      await persistMovements(newMovements);
     }
 
     set({
@@ -5097,7 +5163,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           .eq('id', id);
         if (error) throw new Error(error.message);
       }
-      if (newMovements.length) await supabase.from('movements').insert(newMovements);
+      await persistMovements(newMovements);
     }
 
     set({

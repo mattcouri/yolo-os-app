@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { Plus, Trash2, CheckCircle2, IceCream, Package, Pencil } from "lucide-react";
+import { Plus, Trash2, CheckCircle2, Package, Pencil, ChevronDown, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,14 +11,19 @@ import { AddressSearch } from "@/components/ui/address-search";
 import { TimeSelect } from "@/components/ui/time-select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { KitPicker, type UniformPick } from "@/components/orders/kit-picker";
+import { YoloPopIcon } from "@/components/yolo-pop-icon";
 import { useAppStore } from "@/stores";
 import { useAuthProfile } from "@/lib/auth";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { FulfillmentMethod, OrderType, PhysicalState, Profile, UniformSize } from "@/types/database";
+import type { FulfillmentMethod, MaterialStock, OrderType, PhysicalState, Profile, Stock, UniformSize } from "@/types/database";
 import { UNIFORM_SIZES } from "@/lib/uniforms";
 import { checkoutStaysOut, availableForSizeOnWindow, equipmentBlock } from "@/lib/kit-availability";
-import { TYPE_LABEL, isClosedOrder, isYoloTrip, locationSummary, needsOrderAddress, tripSummary } from "@/lib/separacao";
+import { cn } from "@/lib/utils";
+import { physicalStateOf } from "@/lib/assembly";
+import { TYPE_LABEL, isClosedOrder, isYoloTrip, locationSummary, tripSummary } from "@/lib/separacao";
+import { reservedQuantityForProduct, reservedSkuMap } from "@/lib/stock-reservations";
 import { isBoxAsset, isUniformAsset } from "@/lib/operational-assets";
+import { InventoryShortageAlert } from "@/components/inventory-shortage-alert";
 import { StageTag, stageTagFromStatus } from "@/components/separacao/stage-tag";
 
 const REQUEST_TYPES: { value: OrderType; label: string; hint: string }[] = [
@@ -36,6 +41,35 @@ interface OrderLine {
   productId: string;
   quantity: string;
   state: "" | PhysicalState;
+}
+
+function availableForLine(
+  line: OrderLine,
+  stock: Stock[],
+  materialStock: MaterialStock[],
+  reserved: Map<string, number>
+) {
+  if (!line.productId) return 0;
+  const onHand =
+    line.kind === "material"
+      ? materialStock
+          .filter((row) => row.product_id === line.productId && row.quantity > 0 && row.status === "available")
+          .reduce((sum, row) => sum + row.quantity, 0)
+      : stock
+          .filter(
+            (row) =>
+              row.product_id === line.productId &&
+              row.quantity > 0 &&
+              row.status === "available" &&
+              physicalStateOf(row) === (line.state === "frozen" ? "frozen" : "liquid")
+          )
+          .reduce((sum, row) => sum + row.quantity, 0);
+  const held = reservedQuantityForProduct(
+    reserved,
+    line.productId,
+    line.kind === "pop" ? (line.state === "frozen" ? "frozen" : "liquid") : null
+  );
+  return Math.max(0, onHand - held);
 }
 
 const emptyLine = (kind: LineKind): OrderLine => ({
@@ -71,6 +105,12 @@ function joinDateTime(date: string, time: string) {
   return `${date}T${time}`;
 }
 
+function dateTimeMs(value: string) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.getTime();
+}
+
 const selectClass = "flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm";
 
 const DELIVERY_METHODS: { value: FulfillmentMethod; label: string; hint: string }[] = [
@@ -98,6 +138,9 @@ export function OrderRequestPage() {
     uniformCheckouts,
     orders,
     orderItems,
+    stock,
+    materialStock,
+    separationJobs,
     createOrder,
     updatePlacedOrder,
     fetchProducts,
@@ -105,6 +148,9 @@ export function OrderRequestPage() {
     fetchUniforms,
     fetchEquipmentReservations,
     fetchOrders,
+    fetchStock,
+    fetchMaterialStock,
+    fetchSeparationJobs,
   } = useAppStore();
 
   const pops = useMemo(
@@ -139,6 +185,7 @@ export function OrderRequestPage() {
   const [neededTime, setNeededTime] = useState("10:00");
   const [fulfillment, setFulfillment] = useState<FulfillmentMethod>("entrega_yolo");
   const [address, setAddress] = useState("");
+  const [pickupAddress, setPickupAddress] = useState("");
   const [eventName, setEventName] = useState("");
   const [eventStartDate, setEventStartDate] = useState("");
   const [eventStartTime, setEventStartTime] = useState("");
@@ -153,6 +200,7 @@ export function OrderRequestPage() {
   const [selectedUniforms, setSelectedUniforms] = useState<Record<string, UniformPick>>({});
   const [returningUniformIds, setReturningUniformIds] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
+  const [tradeKitOpen, setTradeKitOpen] = useState(false);
   const [billable, setBillable] = useState<"yes" | "no">("yes");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -162,16 +210,54 @@ export function OrderRequestPage() {
   const isEditing = Boolean(orderId);
   const isEvent = orderType === "evento";
   const isInternal = orderType === "solicitacao_interna";
+  const reservedStock = useMemo(
+    () =>
+      reservedSkuMap(
+        orders.filter((order) => order.id !== orderId),
+        separationJobs,
+        orderItems
+      ),
+    [orders, separationJobs, orderItems, orderId]
+  );
+  const stockShortages = useMemo(() => {
+    const needed = new Map<
+      string,
+      { productId: string; name: string; sku: string; kind: LineKind; state: OrderLine["state"]; qty: number }
+    >();
+    for (const line of lines) {
+      if (!line.productId) continue;
+      const qty = Math.max(0, Number(line.quantity) || 0);
+      if (qty <= 0) continue;
+      const product = products.find((row) => row.id === line.productId);
+      const state = line.kind === "pop" ? (line.state === "frozen" ? "frozen" : "liquid") : "";
+      const key = `${line.kind}:${line.productId}:${state}`;
+      const current = needed.get(key);
+      needed.set(key, {
+        productId: line.productId,
+        name: product?.name || product?.flavor || "Produto",
+        sku: product?.code || "—",
+        kind: line.kind,
+        state,
+        qty: (current?.qty || 0) + qty,
+      });
+    }
+    return [...needed.values()]
+      .map((row) => {
+        const available = availableForLine(
+          { id: row.productId, kind: row.kind, productId: row.productId, quantity: String(row.qty), state: row.state },
+          stock,
+          materialStock,
+          reservedStock
+        );
+        return { ...row, available, missing: row.qty - available };
+      })
+      .filter((row) => row.missing > 0);
+  }, [lines, products, stock, materialStock, reservedStock]);
   const hasReturningKit = returningAssetIds.length > 0 || returningUniformIds.length > 0;
   const showPickup = isEvent || hasReturningKit;
-  const needsAddress = needsOrderAddress(fulfillment, pickupFulfillment, showPickup);
+  const needsDeliveryAddress = isYoloTrip(fulfillment);
+  const needsPickupAddress = showPickup && isYoloTrip(pickupFulfillment);
   const deliveryOptions = DELIVERY_METHODS.filter((method) => isInternal || method.value !== "uso_interno");
-  const addressLabel =
-    isYoloTrip(fulfillment) && showPickup && isYoloTrip(pickupFulfillment)
-      ? "Endereço"
-      : showPickup && isYoloTrip(pickupFulfillment) && !isYoloTrip(fulfillment)
-        ? "Endereço da coleta"
-        : "Endereço da entrega";
 
   useEffect(() => {
     void fetchProducts();
@@ -179,7 +265,10 @@ export function OrderRequestPage() {
     void fetchUniforms();
     void fetchEquipmentReservations();
     void fetchOrders();
-  }, [fetchProducts, fetchAssets, fetchUniforms, fetchEquipmentReservations, fetchOrders]);
+    void fetchStock();
+    void fetchMaterialStock();
+    void fetchSeparationJobs();
+  }, [fetchProducts, fetchAssets, fetchUniforms, fetchEquipmentReservations, fetchOrders, fetchStock, fetchMaterialStock, fetchSeparationJobs]);
 
   useEffect(() => {
     if (profile?.id) {
@@ -259,6 +348,18 @@ export function OrderRequestPage() {
   const eventStart = joinDateTime(eventStartDate, eventStartTime);
   const eventEnd = joinDateTime(eventEndDate, eventEndTime);
   const pickupAt = joinDateTime(pickupDate, pickupTime);
+  const deliveryAt = joinDateTime(neededDate, neededTime);
+  const lateDeliveryWarning =
+    isEvent &&
+    dateTimeMs(deliveryAt) != null &&
+    dateTimeMs(eventStart) != null &&
+    dateTimeMs(deliveryAt)! > dateTimeMs(eventStart)!;
+  const earlyPickupWarning =
+    isEvent &&
+    showPickup &&
+    dateTimeMs(pickupAt) != null &&
+    dateTimeMs(eventEnd) != null &&
+    dateTimeMs(pickupAt)! < dateTimeMs(eventEnd)!;
 
   const reserveFrom = isEvent && eventStart ? eventStart : `${neededDate}T${neededTime || "08:00"}`;
   const reserveUntil =
@@ -278,6 +379,7 @@ export function OrderRequestPage() {
     setFulfillment(editingOrder.fulfillment);
     setPickupFulfillment(editingOrder.pickup_fulfillment || "entrega_yolo");
     setAddress(editingOrder.address || "");
+    setPickupAddress(editingOrder.pickup_address || "");
     setEventName(editingOrder.event_name || "");
     const start = splitDateTime(editingOrder.event_start);
     setEventStartDate(start.date);
@@ -322,6 +424,7 @@ export function OrderRequestPage() {
     }
     setSelectedUniforms(picks);
     setReturningUniformIds(returning);
+    setTradeKitOpen(equipment.length > 0 || Object.keys(picks).length > 0);
     setHydratedId(editingOrder.id);
   }, [editingOrder, hydratedId, orderItems, products, uniformCheckouts]);
 
@@ -400,8 +503,12 @@ export function OrderRequestPage() {
       setError("Informe o dia e o horário.");
       return;
     }
-    if (needsAddress && !address.trim()) {
-      setError("Informe o endereço no Maps.");
+    if (needsDeliveryAddress && !address.trim()) {
+      setError("Informe o endereço de entrega no Maps.");
+      return;
+    }
+    if (needsPickupAddress && !(isEvent ? pickupAddress.trim() : address.trim())) {
+      setError(isEvent ? "Informe o endereço de retirada no Maps." : "Informe o endereço no Maps.");
       return;
     }
     if (isEvent && (!eventName.trim() || !eventStart || !eventEnd)) {
@@ -520,7 +627,8 @@ export function OrderRequestPage() {
         needed_time: neededTime,
         fulfillment,
         pickup_fulfillment: showPickup ? pickupFulfillment : undefined,
-        address: needsAddress ? address.trim() : undefined,
+        address: needsDeliveryAddress ? address.trim() : undefined,
+        pickup_address: isEvent && needsPickupAddress ? pickupAddress.trim() : undefined,
         event_name: isEvent ? eventName.trim() : undefined,
         event_start: isEvent ? eventStart : undefined,
         event_end: isEvent ? eventEnd : undefined,
@@ -658,26 +766,31 @@ export function OrderRequestPage() {
                 <Input value={recipientContact} onChange={(e) => setRecipientContact(e.target.value)} required />
               </div>
               <div className="space-y-1.5">
-                <Label>E-mail</Label>
-                <Input type="email" value={recipientEmail} onChange={(e) => setRecipientEmail(e.target.value)} />
+                <Label>E-mail (opcional)</Label>
+                <Input
+                  type="email"
+                  value={recipientEmail}
+                  onChange={(e) => setRecipientEmail(e.target.value)}
+                  placeholder="Não obrigatório"
+                />
               </div>
             </div>
             {isEvent && (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
-                  <Label>Início · dia</Label>
+                  <Label>Início do Evento</Label>
                   <Input type="date" value={eventStartDate} onChange={(e) => setEventStartDate(e.target.value)} required={isEvent} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Início · hora</Label>
+                  <Label>Hora</Label>
                   <TimeSelect value={eventStartTime} onChange={setEventStartTime} required={isEvent} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Fim · dia</Label>
+                  <Label>Fim do Evento</Label>
                   <Input type="date" value={eventEndDate} onChange={(e) => setEventEndDate(e.target.value)} required={isEvent} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Fim · hora</Label>
+                  <Label>Hora</Label>
                   <TimeSelect value={eventEndTime} onChange={setEventEndTime} required={isEvent} />
                 </div>
               </div>
@@ -688,7 +801,7 @@ export function OrderRequestPage() {
         <Card>
           <CardContent className="space-y-3 p-4">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              {showPickup ? "Detalhes de Entrega e Retirada" : "Detalhes de Entrega"}
+              Detalhes de entrega
             </p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-1.5">
@@ -717,7 +830,36 @@ export function OrderRequestPage() {
                 <TimeSelect value={neededTime} onChange={setNeededTime} required />
               </div>
             </div>
-            {showPickup && (
+            {lateDeliveryWarning && (
+              <p className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                A entrega está depois do início do evento. Você pode salvar assim mesmo.
+              </p>
+            )}
+            {needsDeliveryAddress ? (
+              <AddressSearch
+                inputId="order-delivery-address"
+                value={address}
+                onChange={setAddress}
+                required
+                label={isEvent ? "Endereço de entrega" : "Endereço da entrega"}
+              />
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                {fulfillment === "uso_interno"
+                  ? "Uso interno: sem motorista e sem endereço de entrega."
+                  : "Retirada no CD: sem motorista e sem endereço de entrega."}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        {showPickup ? (
+          <Card>
+            <CardContent className="space-y-3 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Detalhes de retirada
+              </p>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="space-y-1.5">
                   <Label>Retirada</Label>
@@ -745,20 +887,38 @@ export function OrderRequestPage() {
                   <TimeSelect value={pickupTime} onChange={setPickupTime} required={showPickup} />
                 </div>
               </div>
-            )}
-            {needsAddress ? (
-              <AddressSearch value={address} onChange={setAddress} required label={addressLabel} />
-            ) : (
-              <p className="text-[11px] text-muted-foreground">
-                {fulfillment === "uso_interno"
-                  ? "Uso interno: sem motorista e sem endereço."
-                  : showPickup && pickupFulfillment === "retirada_yolo"
-                    ? "Cliente busca e devolve no CD: sem motorista e sem endereço."
-                    : "Retirada no CD: sem motorista e sem endereço de entrega."}
-              </p>
-            )}
-          </CardContent>
-        </Card>
+              {earlyPickupWarning && (
+                <p className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  A retirada está antes do fim do evento. Você pode salvar assim mesmo.
+                </p>
+              )}
+              {isEvent && needsPickupAddress ? (
+                <AddressSearch
+                  inputId="order-pickup-address"
+                  value={pickupAddress}
+                  onChange={setPickupAddress}
+                  required
+                  label="Endereço de retirada"
+                />
+              ) : null}
+              {!isEvent && !needsDeliveryAddress && needsPickupAddress ? (
+                <AddressSearch
+                  inputId="order-pickup-address"
+                  value={address}
+                  onChange={setAddress}
+                  required
+                  label="Endereço da coleta"
+                />
+              ) : null}
+              {!needsPickupAddress ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Devolução no CD: sem motorista e sem endereço de retirada.
+                </p>
+              ) : null}
+            </CardContent>
+          </Card>
+        ) : null}
 
         <Card>
           <CardContent className="space-y-3 p-4">
@@ -766,7 +926,8 @@ export function OrderRequestPage() {
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">O que vai · SKUs</p>
               <div className="flex flex-wrap gap-1">
                 <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => addLine("pop")}>
-                  <IceCream className="mr-1 h-3.5 w-3.5" />
+                  <Plus className="mr-0.5 h-3.5 w-3.5" />
+                  <YoloPopIcon className="mr-1 h-4 w-3.5" />
                   SKU
                 </Button>
                 <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => addLine("material")}>
@@ -834,18 +995,48 @@ export function OrderRequestPage() {
                 </div>
               ))}
             </div>
+            <InventoryShortageAlert
+              rows={stockShortages.map((row) => ({
+                id: `${row.kind}:${row.productId}:${row.state}`,
+                name: row.name,
+                sku: row.sku,
+                state: row.state,
+                qty: row.qty,
+                available: row.available,
+              }))}
+            />
           </CardContent>
         </Card>
 
         <Card>
           <CardContent className="space-y-3 p-4">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">O que vai · kit</p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                Marque vai para o que sai. Volta fica ligado por padrão; desmarque se o item permanece com o destinatário — entra em Histórico de Pedidos → Ativos na rua.
-              </p>
-            </div>
-            <KitPicker
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-3 text-left transition hover:bg-muted/70"
+              onClick={() => setTradeKitOpen((open) => !open)}
+              aria-expanded={tradeKitOpen}
+            >
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-wider">Itens adicionais - Trade</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {tradeKitOpen
+                    ? "Equipamentos e uniformes deste pedido."
+                    : "Toque para incluir equipamentos e uniformes."}
+                </p>
+              </div>
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-md border bg-background px-2.5 py-1.5 text-xs font-medium">
+                {tradeKitOpen ? "Ocultar" : "Mostrar"}
+                <ChevronDown
+                  className={cn("h-4 w-4 transition-transform", tradeKitOpen && "rotate-180")}
+                />
+              </span>
+            </button>
+            {tradeKitOpen ? (
+              <>
+                <p className="text-[11px] text-muted-foreground">
+                  Marque vai para o que sai. Volta fica ligado por padrão; desmarque se o item permanece com o destinatário — entra em Histórico de Pedidos → Ativos na rua.
+                </p>
+                <KitPicker
               assets={pickerAssets}
               uniforms={uniforms}
               reservations={pickerReservations}
@@ -892,15 +1083,22 @@ export function OrderRequestPage() {
                 );
               }}
             />
-            <div className="space-y-1.5 pt-1">
-              <Label>Observações para Operações</Label>
-              <Textarea
-                className="min-h-[72px]"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Embalagem, acesso, o que volta…"
-              />
-            </div>
+              </>
+            ) : null}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Observações para Operações
+            </p>
+            <Textarea
+              className="min-h-[72px]"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Embalagem, acesso, o que volta…"
+            />
           </CardContent>
         </Card>
 

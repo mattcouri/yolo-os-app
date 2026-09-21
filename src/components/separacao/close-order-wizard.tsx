@@ -9,6 +9,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { InventoryShortageAlert } from "@/components/inventory-shortage-alert";
 import { returnAssetYardLocations } from "@/lib/locations";
 import {
   cleanLocation,
@@ -22,6 +24,8 @@ import {
   type ReturnUnit,
   type ReturnUnitCondition,
 } from "@/lib/separacao";
+import { closeStockShortages } from "@/lib/stock-reservations";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { useAppStore } from "@/stores";
 import type { Order, OrderItem, SeparationJob } from "@/types/database";
 import { cn } from "@/lib/utils";
@@ -35,6 +39,15 @@ type WizardRecord = {
   items: OrderItem[];
 };
 
+async function uploadDamagePhoto(file: File) {
+  if (!isSupabaseConfigured || !supabase) return URL.createObjectURL(file);
+  const safeName = file.name.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9._-]/g, "");
+  const path = `returns/${crypto.randomUUID()}-${safeName}`;
+  const { error } = await supabase.storage.from("asset-files").upload(path, file);
+  if (error) throw new Error(error.message);
+  return supabase.storage.from("asset-files").getPublicUrl(path).data.publicUrl;
+}
+
 export function CloseOrderWizard({
   record,
   onClose,
@@ -43,6 +56,10 @@ export function CloseOrderWizard({
   onClose: () => void;
 }) {
   const locations = useAppStore((state) => state.locations);
+  const products = useAppStore((state) => state.products);
+  const stock = useAppStore((state) => state.stock);
+  const materialStock = useAppStore((state) => state.materialStock);
+  const movements = useAppStore((state) => state.movements);
   const closeSeparationOrder = useAppStore((state) => state.closeSeparationOrder);
   const unitsMeta = useMemo(
     () => (record ? expandReturnUnits(record.items) : []),
@@ -52,10 +69,19 @@ export function CloseOrderWizard({
   const [units, setUnits] = useState<ReturnUnit[]>([]);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   const dirty = dirtyLocation(locations);
   const clean = cleanLocation(locations);
   const yardLocations = useMemo(() => returnAssetYardLocations(locations), [locations]);
+  const noReturns = unitsMeta.length === 0;
+  const stockShortages = useMemo(
+    () =>
+      record
+        ? closeStockShortages(record.order.id, record.items, products, stock, materialStock, movements)
+        : [],
+    [record, products, stock, materialStock, movements]
+  );
 
   useEffect(() => {
     if (!record) return;
@@ -65,6 +91,8 @@ export function CloseOrderWizard({
       unit_index: row.unitIndex,
       condition: "ok" as const,
       location_id: defaultOk,
+      notes: null,
+      photo_url: null,
     }));
     setUnits(next);
     setStep(0);
@@ -72,9 +100,8 @@ export function CloseOrderWizard({
   }, [record?.order.id, clean?.id]);
 
   const totalUnits = unitsMeta.length;
-  const isIntro = step === 0;
-  const isReview = totalUnits === 0 ? step >= 1 : step === totalUnits + 1;
-  const unitStep = !isIntro && !isReview ? step - 1 : -1;
+  const isReview = noReturns || step >= totalUnits;
+  const unitStep = isReview ? -1 : step;
   const currentMeta = unitStep >= 0 ? unitsMeta[unitStep] : null;
   const currentUnit = unitStep >= 0 ? units[unitStep] : null;
 
@@ -96,6 +123,16 @@ export function CloseOrderWizard({
 
   const canAdvanceUnit = () => {
     if (!currentUnit) return true;
+    if (currentUnit.condition === "damaged") {
+      if (!currentUnit.photo_url) {
+        setError("Envie uma foto do dano.");
+        return false;
+      }
+      if (!currentUnit.notes?.trim()) {
+        setError("Descreva o dano.");
+        return false;
+      }
+    }
     if (currentUnit.condition === "lost") return true;
     if (!currentUnit.location_id) {
       setError("Diga onde esta peça vai ficar.");
@@ -110,15 +147,34 @@ export function CloseOrderWizard({
     setStep((current) => current + 1);
   };
 
+  const handleDamagePhoto = async (file: File | undefined) => {
+    if (!file || unitStep < 0) return;
+    setUploading(true);
+    setError("");
+    try {
+      const photo_url = await uploadDamagePhoto(file);
+      patchUnit(unitStep, { photo_url });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível enviar a foto.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!record) return;
     const incomplete = units.find((unit, index) => {
       const meta = unitsMeta[index];
       if (!meta) return false;
+      if (unit.condition === "damaged" && (!unit.photo_url || !unit.notes?.trim())) return true;
       return unit.condition !== "lost" && !unit.location_id;
     });
     if (incomplete) {
-      setError("Toda peça que voltou precisa de um local.");
+      setError("Toda peça danificada precisa de foto e observação, e o que voltou precisa de um local.");
+      return;
+    }
+    if (stockShortages.length) {
+      setError("Não dá para fechar: estoque insuficiente para baixar os SKUs.");
       return;
     }
     setIsSaving(true);
@@ -143,30 +199,10 @@ export function CloseOrderWizard({
           </DialogDescription>
         </DialogHeader>
 
-        {isIntro && (
-          <div className="space-y-3 text-sm">
-            <p>
-              Use a folha de papel da coleta. Vamos conferir <strong>cada peça</strong> que deveria voltar —
-              se saíram 3 camisas, conferimos as 3, uma por uma.
-            </p>
-            {totalUnits === 0 ? (
-              <p className="rounded-lg border bg-muted/40 px-3 py-2 text-muted-foreground">
-                Este pedido não tem itens com volta. Fechar só encerra o evento.
-              </p>
-            ) : (
-              <ul className="space-y-1 rounded-lg border px-3 py-2">
-                {record?.items
-                  .filter((item) => item.is_returnable)
-                  .map((item) => (
-                    <li key={item.id} className="flex justify-between gap-2">
-                      <span className="truncate">{item.name}</span>
-                      <span className="shrink-0 tabular-nums text-muted-foreground">
-                        {item.quantity} {item.unit}
-                      </span>
-                    </li>
-                  ))}
-              </ul>
-            )}
+        {noReturns && (
+          <div className="space-y-2 text-sm">
+            <p className="rounded-lg border bg-muted/40 px-3 py-2">Este pedido não tem itens com volta.</p>
+            <p className="rounded-lg border bg-muted/40 px-3 py-2">Nenhuma peça para devolver.</p>
           </div>
         )}
 
@@ -197,6 +233,39 @@ export function CloseOrderWizard({
                 </button>
               ))}
             </div>
+            {currentUnit.condition === "damaged" && (
+              <div className="space-y-3 rounded-lg border p-3">
+                <div>
+                  <Label htmlFor="damage-photo">Foto do dano</Label>
+                  <input
+                    id="damage-photo"
+                    type="file"
+                    accept="image/*"
+                    className="mt-1.5 block w-full text-sm"
+                    disabled={uploading || isSaving}
+                    onChange={(event) => void handleDamagePhoto(event.target.files?.[0])}
+                  />
+                  {currentUnit.photo_url && (
+                    <img
+                      src={currentUnit.photo_url}
+                      alt="Dano"
+                      className="mt-2 max-h-40 w-full rounded-md object-cover"
+                    />
+                  )}
+                </div>
+                <div>
+                  <Label htmlFor="damage-notes">Observação</Label>
+                  <Textarea
+                    id="damage-notes"
+                    className="mt-1.5"
+                    rows={3}
+                    placeholder="O que aconteceu com a peça"
+                    value={currentUnit.notes || ""}
+                    onChange={(event) => patchUnit(unitStep, { notes: event.target.value })}
+                  />
+                </div>
+              </div>
+            )}
             {currentUnit.condition !== "lost" && (
               <div>
                 <Label>Onde você está guardando</Label>
@@ -217,31 +286,31 @@ export function CloseOrderWizard({
           </div>
         )}
 
-        {isReview && (
+        {isReview && !noReturns && (
           <div className="space-y-3">
-            <p className="text-sm">Confira o que vai para o pátio de ativos. Depois o pedido sai de Em andamento.</p>
-            {unitsMeta.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Nenhuma peça para devolver.</p>
-            ) : (
-              <ul className="divide-y rounded-lg border">
-                {unitsMeta.map((meta, index) => {
-                  const unit = units[index];
-                  const locationName =
-                    yardLocations.find((location) => location.id === unit?.location_id)?.name || "—";
-                  return (
-                    <li key={`${meta.item.id}-${meta.unitIndex}`} className="px-3 py-2 text-sm">
-                      <p className="font-medium">{meta.label}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {unit ? statusLabel(returnUnitAssetStatus(unit.condition)) : "—"}
-                        {unit?.condition === "lost" ? "" : ` · ${locationName}`}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+            <ul className="divide-y rounded-lg border">
+              {unitsMeta.map((meta, index) => {
+                const unit = units[index];
+                const locationName =
+                  yardLocations.find((location) => location.id === unit?.location_id)?.name || "—";
+                return (
+                  <li key={`${meta.item.id}-${meta.unitIndex}`} className="px-3 py-2 text-sm">
+                    <p className="font-medium">{meta.label}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {unit ? statusLabel(returnUnitAssetStatus(unit.condition)) : "—"}
+                      {unit?.condition === "lost" ? "" : ` · ${locationName}`}
+                    </p>
+                    {unit?.condition === "damaged" && unit.notes && (
+                      <p className="mt-1 text-xs">{unit.notes}</p>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         )}
+
+        <InventoryShortageAlert rows={stockShortages} />
 
         {error && (
           <p className="text-sm text-destructive" role="alert">
@@ -256,8 +325,8 @@ export function CloseOrderWizard({
             </Button>
           )}
           {!isReview && (
-            <Button type="button" disabled={isSaving} onClick={handleNext}>
-              {isIntro && totalUnits === 0 ? "Continuar" : isIntro ? "Começar conferência" : "Próxima peça"}
+            <Button type="button" disabled={isSaving || uploading} onClick={handleNext}>
+              {unitStep === totalUnits - 1 ? "Revisar" : "Próxima peça"}
             </Button>
           )}
           {isReview && (

@@ -13,6 +13,7 @@ import { useAppStore } from "@/stores";
 import { isAssemblyBox, popBaseQuantity, stockPopUnits } from "@/lib/assembly";
 import { applySavedColumnOrder, KANBAN_BOARDS } from "@/lib/kanban-order";
 import { locationsForKind } from "@/lib/locations";
+import { reservedPopUnitsForProduct, reservedQuantityForProduct, reservedSkuMap } from "@/lib/stock-reservations";
 import type { Asset, Location, MaterialStock, Product, ProductComponent, Stock } from "@/types/database";
 
 type GradeKey = "AAA" | "B" | "C" | "blocked" | "analysis";
@@ -245,8 +246,12 @@ type SkuTotalRow = {
   kind: "Individual" | "Composto";
   isComposite: boolean;
   quantity: number;
+  reserved: number;
+  livre: number;
   baseQuantity: number;
   inventoryTotal: number;
+  reservedPops: number;
+  livrePops: number;
   search: string;
 };
 
@@ -257,7 +262,8 @@ function liveSkuStock(item: Stock) {
 function buildSkuTotals(
   products: Product[],
   stock: Stock[],
-  components: ProductComponent[]
+  components: ProductComponent[],
+  reserved: Map<string, number>
 ): SkuTotalRow[] {
   return products
     .filter((product) => product.kind === "pop")
@@ -265,11 +271,14 @@ function buildSkuTotals(
     .map((product) => {
       const rows = stock.filter((item) => item.product_id === product.id && isCountablePop(item));
       const quantity = rows.reduce((sum, item) => sum + item.quantity, 0);
+      const reservedQty = reservedQuantityForProduct(reserved, product.id);
+      const reservedPops = reservedPopUnitsForProduct(reservedQty, product.id, products, components);
       const kind: SkuTotalRow["kind"] = product.is_composite ? "Composto" : "Individual";
       const flavor = product.flavor?.trim() || "—";
       const name = product.name || "—";
       const format = product.format || null;
       const baseQuantity = popBaseQuantity(product.id, products, components);
+      const inventoryTotal = quantity * baseQuantity;
       return {
         id: product.id,
         sku: product.code,
@@ -279,8 +288,12 @@ function buildSkuTotals(
         kind,
         isComposite: product.is_composite,
         quantity,
+        reserved: reservedQty,
+        livre: Math.max(0, quantity - reservedQty),
         baseQuantity,
-        inventoryTotal: quantity * baseQuantity,
+        inventoryTotal,
+        reservedPops,
+        livrePops: Math.max(0, inventoryTotal - reservedPops),
         search: `${product.code} ${name} ${flavor} ${kind} ${format || ""}`.toLowerCase(),
       };
     })
@@ -324,15 +337,19 @@ function SkuQuantityCell({
 }
 
 function SkuTotalsTable() {
-  const { products, stock, productComponents, adjustSkuQuantity } = useAppStore();
+  const { products, stock, productComponents, adjustSkuQuantity, orders, orderItems, separationJobs } = useAppStore();
   const { isAdmin } = useAuthProfile();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const reserved = useMemo(
+    () => reservedSkuMap(orders, separationJobs, orderItems),
+    [orders, separationJobs, orderItems]
+  );
   const rows = useMemo(
-    () => buildSkuTotals(products, stock, productComponents),
-    [products, stock, productComponents]
+    () => buildSkuTotals(products, stock, productComponents, reserved),
+    [products, stock, productComponents, reserved]
   );
 
   const save = async (row: SkuTotalRow) => {
@@ -459,6 +476,22 @@ function SkuTotalsTable() {
                   onSave={() => void save(row)}
                 />
               ),
+            },
+            {
+              key: "reserved",
+              header: "Reservado",
+              width: "w-24",
+              align: "center",
+              sortable: true,
+              render: (row) => qtyCell(row.reserved),
+            },
+            {
+              key: "livre",
+              header: "Livre",
+              width: "w-24",
+              align: "center",
+              sortable: true,
+              render: (row) => qtyCell(row.livre),
             },
             {
               key: "baseQuantity",
@@ -659,6 +692,9 @@ export function InventoryPage() {
     productComponents,
     kanbanColumnOrders,
     saveKanbanColumnOrder,
+    orders,
+    orderItems,
+    separationJobs,
   } = useAppStore();
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -702,6 +738,25 @@ export function InventoryPage() {
   const countable = stock.filter(isCountablePop);
   const popUnits = (item: Stock) => stockPopUnits(item, products, productComponents);
   const totalPops = countable.reduce((sum, item) => sum + popUnits(item), 0);
+  const reserved = useMemo(
+    () => reservedSkuMap(orders, separationJobs, orderItems),
+    [orders, separationJobs, orderItems]
+  );
+  const reservedPops = useMemo(() => {
+    const productIds = new Set<string>();
+    for (const key of reserved.keys()) {
+      productIds.add(key.slice(0, key.lastIndexOf(":")));
+    }
+    let total = 0;
+    for (const productId of productIds) {
+      const product = products.find((row) => row.id === productId);
+      if (!product || product.kind === "material") continue;
+      const qty = reservedQuantityForProduct(reserved, productId);
+      total += reservedPopUnitsForProduct(qty, productId, products, productComponents);
+    }
+    return total;
+  }, [reserved, products, productComponents]);
+  const livrePops = Math.max(0, totalPops - reservedPops);
   const totalFrozen = countable
     .filter((item) => item.physical_state === "frozen")
     .reduce((sum, item) => sum + popUnits(item), 0);
@@ -733,8 +788,16 @@ export function InventoryPage() {
             <CardDescription>Total</CardDescription>
             <CardTitle className="text-3xl">{totalPops.toLocaleString("pt-BR")}</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-1 pt-0 text-sm">
             <p className="text-xs text-muted-foreground">pops, sem rejeito (unidades + SKUs montados)</p>
+            <div className="flex justify-between gap-2 pt-1">
+              <span className="text-muted-foreground">Reservado</span>
+              <span className="font-semibold">{reservedPops.toLocaleString("pt-BR")}</span>
+            </div>
+            <div className="flex justify-between gap-2">
+              <span className="text-muted-foreground">Livre</span>
+              <span className="font-semibold">{livrePops.toLocaleString("pt-BR")}</span>
+            </div>
           </CardContent>
         </Card>
         <Card>

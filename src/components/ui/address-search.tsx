@@ -64,12 +64,14 @@ export function AddressSearch({
   required,
   disabled,
   label = "Endereço",
+  inputId = "order-address",
 }: {
   value: string;
   onChange: (address: string) => void;
   required?: boolean;
   disabled?: boolean;
   label?: string;
+  inputId?: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const onChangeRef = useRef(onChange);
@@ -107,11 +109,11 @@ export function AddressSearch({
 
   return (
     <div className="space-y-2">
-      <Label htmlFor="order-address">{label}</Label>
+      <Label htmlFor={inputId}>{label}</Label>
       <div className="relative">
         <MapPin className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          id="order-address"
+          id={inputId}
           ref={inputRef}
           value={value}
           disabled={disabled}
