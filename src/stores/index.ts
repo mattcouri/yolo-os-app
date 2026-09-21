@@ -154,6 +154,7 @@ interface AppState {
   createAsset: (data: Partial<Asset> & Pick<Asset, 'code' | 'name' | 'type'>) => Promise<Asset>;
   createAssets: (rows: Array<Partial<Asset> & Pick<Asset, 'code' | 'name' | 'type'>>) => Promise<Asset[]>;
   deleteAsset: (id: string) => Promise<void>;
+  deleteAssets: (ids: string[]) => Promise<void>;
   fetchAssetComponents: (assetId: string) => Promise<AssetComponent[]>;
   replaceAssetComponents: (assetId: string, components: Omit<AssetComponent, 'id' | 'parent_asset_id' | 'created_at'>[]) => Promise<AssetComponent[]>;
   fetchAssetAttachments: (assetId: string) => Promise<AssetAttachment[]>;
@@ -1229,6 +1230,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     dropFromCatalog(true);
+  },
+
+  deleteAssets: async (ids) => {
+    const unique = [...new Set(ids.filter(Boolean))];
+    for (const id of unique) {
+      await get().deleteAsset(id);
+    }
   },
   
   fetchReceipts: async () => {

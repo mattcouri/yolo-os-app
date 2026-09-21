@@ -164,7 +164,7 @@ const STATUS_MAP: Record<string, { label: string; variant: "default" | "secondar
 };
 
 export function EmbalagensPanel() {
-  const { assets, locations, createAssets, updateAsset, deleteAsset } = useAppStore();
+  const { assets, locations, createAssets, updateAsset, deleteAsset, deleteAssets } = useAppStore();
   const homeLocationId = orderedBoxYardLocations(locations)[0]?.id || "";
   const boxes = useMemo(
     () => assets.filter((asset) => asset.is_active !== false && isBoxAsset(asset)),
@@ -218,9 +218,10 @@ export function EmbalagensPanel() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const [unitsType, setUnitsType] = useState<string | null>(null);
+  const [selectedUnitIds, setSelectedUnitIds] = useState<string[]>([]);
   const [unitEdit, setUnitEdit] = useState<Asset | null>(null);
   const [qrAsset, setQrAsset] = useState<Asset | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Asset | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<Asset[]>([]);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const qrRef = useRef<HTMLDivElement>(null);
 
@@ -361,6 +362,7 @@ export function EmbalagensPanel() {
         .filter((box) => box.type === unitsType)
         .sort((a, b) => a.code.localeCompare(b.code, "pt-BR", { numeric: true }))
     : [];
+  const selectedUnits = units.filter((unit) => selectedUnitIds.includes(unit.id));
 
   return (
     <>
@@ -494,7 +496,15 @@ export function EmbalagensPanel() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(unitsType)} onOpenChange={(open) => !open && setUnitsType(null)}>
+      <Dialog
+        open={Boolean(unitsType)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setUnitsType(null);
+            setSelectedUnitIds([]);
+          }
+        }}
+      >
         <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle className="text-lg">{unitsType ? typeLabel(unitsType) : "Unidades"}</DialogTitle>
@@ -510,6 +520,8 @@ export function EmbalagensPanel() {
               searchPlaceholder="Buscar código..."
               emptyMessage="Nenhuma unidade neste tipo."
               maxHeight="50vh"
+              selectedIds={selectedUnitIds}
+              onSelectedIdsChange={setSelectedUnitIds}
               columns={[
                 {
                   key: "code",
@@ -607,7 +619,7 @@ export function EmbalagensPanel() {
                     size="icon"
                     className="h-7 w-7 text-destructive hover:text-destructive"
                     title="Excluir"
-                    onClick={() => setDeleteTarget(item)}
+                    onClick={() => setDeleteTargets([item])}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -615,14 +627,46 @@ export function EmbalagensPanel() {
               )}
             />
           </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" className="h-9" onClick={() => unitsType && openCreate(unitsType)}>
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              Adicionar unidades
-            </Button>
-            <Button type="button" className="h-9" onClick={() => setUnitsType(null)}>
-              Fechar
-            </Button>
+          <DialogFooter className="flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-9"
+                disabled={units.length === 0}
+                onClick={() => setSelectedUnitIds(units.map((unit) => unit.id))}
+              >
+                Selecionar todas
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-9"
+                disabled={selectedUnitIds.length === 0}
+                onClick={() => setSelectedUnitIds([])}
+              >
+                Limpar seleção
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                className="h-9"
+                disabled={selectedUnits.length === 0}
+                onClick={() => setDeleteTargets(selectedUnits)}
+              >
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+                Excluir {selectedUnits.length || ""}
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" className="h-9" onClick={() => unitsType && openCreate(unitsType)}>
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                Adicionar unidades
+              </Button>
+              <Button type="button" className="h-9" onClick={() => setUnitsType(null)}>
+                Fechar
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -708,16 +752,25 @@ export function EmbalagensPanel() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+      <Dialog open={deleteTargets.length > 0} onOpenChange={(open) => !open && !deleteBusy && setDeleteTargets([])}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Excluir {deleteTarget?.code}?</DialogTitle>
+            <DialogTitle>
+              {deleteTargets.length === 1
+                ? `Excluir ${deleteTargets[0]?.code}?`
+                : `Excluir ${deleteTargets.length} unidades?`}
+            </DialogTitle>
             <DialogDescription>
-              A unidade sai do cadastro. Histórico operacional pode manter o código inativo.
+              {deleteTargets.length === 1
+                ? "A unidade sai do cadastro. Histórico operacional pode manter o código inativo."
+                : `${deleteTargets
+                    .slice(0, 6)
+                    .map((unit) => unit.code)
+                    .join(", ")}${deleteTargets.length > 6 ? "…" : ""}. Histórico operacional pode manter os códigos inativos.`}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button type="button" variant="outline" className="h-9" disabled={deleteBusy} onClick={() => setDeleteTarget(null)}>
+            <Button type="button" variant="outline" className="h-9" disabled={deleteBusy} onClick={() => setDeleteTargets([])}>
               Cancelar
             </Button>
             <Button
@@ -726,11 +779,14 @@ export function EmbalagensPanel() {
               className="h-9"
               disabled={deleteBusy}
               onClick={async () => {
-                if (!deleteTarget) return;
+                if (!deleteTargets.length) return;
                 setDeleteBusy(true);
                 try {
-                  await deleteAsset(deleteTarget.id);
-                  setDeleteTarget(null);
+                  const ids = deleteTargets.map((unit) => unit.id);
+                  if (ids.length === 1) await deleteAsset(ids[0]);
+                  else await deleteAssets(ids);
+                  setSelectedUnitIds((current) => current.filter((id) => !ids.includes(id)));
+                  setDeleteTargets([]);
                 } catch (error) {
                   alert(error instanceof Error ? error.message : "Não foi possível excluir.");
                 } finally {
@@ -738,7 +794,7 @@ export function EmbalagensPanel() {
                 }
               }}
             >
-              Excluir
+              {deleteBusy ? "Excluindo…" : "Excluir"}
             </Button>
           </DialogFooter>
         </DialogContent>

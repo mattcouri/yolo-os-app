@@ -24,6 +24,7 @@ import { defaultWidthFromClass, useTableColumnWidths } from "@/lib/table-column-
 
 const ROW_NUM_KEY = "__rowNum";
 const DRAG_KEY = "__drag";
+const SELECT_KEY = "__select";
 const ACTIONS_KEY = "__actions";
 
 interface DataTableProps<T> {
@@ -48,6 +49,8 @@ interface DataTableProps<T> {
   onReorder?: (items: T[]) => void;
   draggable?: boolean;
   tableId?: string;
+  selectedIds?: string[];
+  onSelectedIdsChange?: (ids: string[]) => void;
 }
 
 interface SortableRowProps<T> {
@@ -57,6 +60,8 @@ interface SortableRowProps<T> {
   actions?: DataTableProps<T>["actions"];
   showRowNumbers: boolean;
   draggable: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string, checked: boolean) => void;
 }
 
 function SortableRow<T extends { id: string }>({
@@ -66,6 +71,8 @@ function SortableRow<T extends { id: string }>({
   actions,
   showRowNumbers,
   draggable,
+  selected,
+  onToggleSelect,
 }: SortableRowProps<T>) {
   const {
     attributes,
@@ -105,6 +112,17 @@ function SortableRow<T extends { id: string }>({
       {showRowNumbers && (
         <td className="min-h-11 px-3 py-1.5 text-muted-foreground text-center font-mono text-xs overflow-hidden">
           {index + 1}
+        </td>
+      )}
+      {onToggleSelect && (
+        <td className="min-h-11 px-3 py-1.5 text-center overflow-hidden">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-primary"
+            checked={Boolean(selected)}
+            onChange={(event) => onToggleSelect(item.id, event.target.checked)}
+            aria-label="Selecionar"
+          />
         </td>
       )}
       {columns.map((col) => (
@@ -184,6 +202,8 @@ export function DataTable<T extends { id: string }>({
   onReorder,
   draggable = false,
   tableId,
+  selectedIds,
+  onSelectedIdsChange,
 }: DataTableProps<T>) {
   const location = useLocation();
   const resolvedTableId = React.useMemo(
@@ -197,12 +217,13 @@ export function DataTable<T extends { id: string }>({
     const next: Record<string, number> = {};
     if (draggable) next[DRAG_KEY] = 32;
     if (showRowNumbers) next[ROW_NUM_KEY] = 48;
+    if (onSelectedIdsChange) next[SELECT_KEY] = 40;
     for (const col of columns) {
       next[col.key] = defaultWidthFromClass(col.width, 160);
     }
     if (actions) next[ACTIONS_KEY] = defaultWidthFromClass("w-28", 112);
     return next;
-  }, [actions, columns, draggable, showRowNumbers]);
+  }, [actions, columns, draggable, onSelectedIdsChange, showRowNumbers]);
 
   const { widths, setColumnWidth } = useTableColumnWidths(resolvedTableId, defaultWidths);
   const dragStartWidth = React.useRef<Record<string, number>>({});
@@ -302,10 +323,34 @@ export function DataTable<T extends { id: string }>({
     const keys: string[] = [];
     if (draggable) keys.push(DRAG_KEY);
     if (showRowNumbers) keys.push(ROW_NUM_KEY);
+    if (onSelectedIdsChange) keys.push(SELECT_KEY);
     keys.push(...columns.map((col) => col.key));
     if (actions) keys.push(ACTIONS_KEY);
     return keys;
-  }, [actions, columns, draggable, showRowNumbers]);
+  }, [actions, columns, draggable, onSelectedIdsChange, showRowNumbers]);
+
+  const selectedSet = React.useMemo(() => new Set(selectedIds || []), [selectedIds]);
+  const visibleIds = filteredData.map((item) => item.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedSet.has(id));
+  const someVisibleSelected = visibleIds.some((id) => selectedSet.has(id));
+
+  const toggleRow = (id: string, checked: boolean) => {
+    if (!onSelectedIdsChange) return;
+    const next = new Set(selectedSet);
+    if (checked) next.add(id);
+    else next.delete(id);
+    onSelectedIdsChange([...next]);
+  };
+
+  const toggleVisible = (checked: boolean) => {
+    if (!onSelectedIdsChange) return;
+    const next = new Set(selectedSet);
+    for (const id of visibleIds) {
+      if (checked) next.add(id);
+      else next.delete(id);
+    }
+    onSelectedIdsChange([...next]);
+  };
 
   const tableWidth = colKeys.reduce((sum, key) => sum + (widths[key] ?? defaultWidths[key] ?? 120), 0);
 
@@ -338,6 +383,21 @@ export function DataTable<T extends { id: string }>({
         <th className="relative h-9 px-3 text-center font-medium text-muted-foreground">
           #
           <ColumnResizeHandle onResize={(delta, done) => handleResize(ROW_NUM_KEY, delta, done)} />
+        </th>
+      )}
+      {onSelectedIdsChange && (
+        <th className="relative h-9 px-3 text-center">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-primary"
+            checked={allVisibleSelected}
+            ref={(node) => {
+              if (node) node.indeterminate = someVisibleSelected && !allVisibleSelected;
+            }}
+            onChange={(event) => toggleVisible(event.target.checked)}
+            aria-label="Selecionar todas"
+          />
+          <ColumnResizeHandle onResize={(delta, done) => handleResize(SELECT_KEY, delta, done)} />
         </th>
       )}
       {columns.map((col) => (
@@ -401,6 +461,8 @@ export function DataTable<T extends { id: string }>({
               actions={actions}
               showRowNumbers={showRowNumbers}
               draggable={draggable}
+              selected={selectedSet.has(item.id)}
+              onToggleSelect={onSelectedIdsChange ? toggleRow : undefined}
             />
           ))}
         </SortableContext>
@@ -414,6 +476,17 @@ export function DataTable<T extends { id: string }>({
           {showRowNumbers && (
             <td className="min-h-11 px-3 py-1.5 text-muted-foreground text-center font-mono text-xs overflow-hidden">
               {index + 1}
+            </td>
+          )}
+          {onSelectedIdsChange && (
+            <td className="min-h-11 px-3 py-1.5 text-center overflow-hidden">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-primary"
+                checked={selectedSet.has(item.id)}
+                onChange={(event) => toggleRow(item.id, event.target.checked)}
+                aria-label={`Selecionar ${item.id}`}
+              />
             </td>
           )}
           {columns.map((col) => (
