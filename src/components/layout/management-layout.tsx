@@ -19,6 +19,7 @@ import {
   Grid3X3,
   Wrench,
   Shirt,
+  Layers,
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
@@ -26,7 +27,8 @@ import { ROLE_LABELS, useAuthProfile } from "@/lib/auth";
 
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/gestao" },
-  { icon: Package, label: "Inventário", path: "/gestao/inventory" },
+  { icon: Package, label: "Inventário - SKUs", path: "/gestao/inventory" },
+  { icon: Layers, label: "Materiais", path: "/gestao/materiais" },
   { icon: Wrench, label: "Ativos", path: "/gestao/ativos" },
   { icon: Box, label: "Embalagens", path: "/gestao/packaging" },
   { icon: Shirt, label: "Uniformes", path: "/gestao/uniformes" },

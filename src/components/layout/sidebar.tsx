@@ -35,7 +35,7 @@ interface SidebarProps {
 
 const navItems = [
   { icon: Home, label: "Início", path: "/" },
-  { icon: Package, label: "Inventário", path: "/inventory" },
+  { icon: Package, label: "Inventário - SKUs", path: "/inventory" },
   { icon: ClipboardList, label: "Pedidos", path: "/orders" },
   { icon: Calendar, label: "Calendário", path: "/calendar" },
   { icon: Truck, label: "Entregas", path: "/deliveries" },

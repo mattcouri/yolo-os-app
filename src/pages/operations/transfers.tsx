@@ -1,19 +1,17 @@
 import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeftRight, CheckCircle2, Package2, QrCode, X } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { productStockLocations } from "@/lib/locations";
 import {
-  boxCapacity,
+  ASSEMBLY_DEST,
+  assemblyKey,
   findAssemblyBox,
-  isAssemblyBox,
-  isPackingRoom,
+  packingRoomLocation,
   physicalStateOf,
-  stateLabel,
 } from "@/lib/assembly";
 import { useAppStore } from "@/stores";
 import type { Asset, Location, Product, Stock } from "@/types/database";
@@ -53,7 +51,7 @@ export function TransfersPage() {
           Caixas no lugar certo.
         </h1>
         <p className="text-muted-foreground mt-1">
-          Movimente caixas de 100 e escolha a caixa de montagem do packing.
+          Movimente caixas de 100 ou envie uma para a caixa de montagem.
         </p>
       </div>
 
@@ -66,7 +64,7 @@ export function TransfersPage() {
               </span>
               <strong className="text-lg">Transferir caixas</strong>
               <p className="text-sm text-muted-foreground mt-1">
-                Escaneie, escolha o destino e defina a caixa de montagem.
+                Escaneie e escolha o destino, inclusive caixa de montagem.
               </p>
             </CardContent>
           </Card>
@@ -98,7 +96,6 @@ export function BatchTransferPage() {
     products,
     transferBoxes,
     promoteAssemblyBox,
-    scanEmptyAssemblyBox,
   } = useAppStore();
 
   const activeLocations = useMemo(
@@ -138,100 +135,27 @@ export function BatchTransferPage() {
   const selected = selectedStockIds
     .map((id) => movable.find((row) => row.stock.id === id))
     .filter((row): row is MovableBox => Boolean(row));
+  const packing = packingRoomLocation(locations);
   const selectable = inOrigin.filter(
-    (row) => !selectedStockIds.includes(row.stock.id) && row.stock.location_id !== destination
+    (row) =>
+      !selectedStockIds.includes(row.stock.id) &&
+      (destination === ASSEMBLY_DEST || !destination || row.stock.location_id !== destination)
   );
   const totalPops = selected.reduce((sum, row) => sum + row.stock.quantity, 0);
   const destinationOptions = activeLocations.filter((location) => location.id !== originId);
 
-  const [assemblyScan, setAssemblyScan] = useState("");
-  const [assemblyMessage, setAssemblyMessage] = useState("");
-  const [assemblyError, setAssemblyError] = useState("");
-  const [assemblySaving, setAssemblySaving] = useState(false);
-  const assemblyScannerRef = useRef<HTMLInputElement>(null);
-
-  const assemblyBoxes = useMemo(
-    () =>
-      stock
-        .filter((item) => isAssemblyBox(item))
-        .sort((a, b) => {
-          const left = products.find((product) => product.id === a.product_id);
-          const right = products.find((product) => product.id === b.product_id);
-          return (left?.flavor || left?.name || "").localeCompare(right?.flavor || right?.name || "", "pt-BR");
-        }),
-    [stock, products]
-  );
-
-  const packingCandidates = useMemo(() => {
-    return stock
-      .filter((item) => {
-        if (item.quantity <= 0 || item.status === "depleted" || item.status === "analysis") return false;
-        if (item.is_active_separation || !item.asset_id) return false;
-        const location = locations.find((row) => row.id === item.location_id);
-        if (!isPackingRoom(location)) return false;
-        const asset = assets.find((row) => row.id === item.asset_id);
-        return Boolean(asset && asset.type === "caixa_media");
-      })
-      .map((item) => {
-        const asset = assets.find((row) => row.id === item.asset_id) as Asset;
-        const product = products.find((row) => row.id === item.product_id);
-        const existing = findAssemblyBox(stock, item.product_id, physicalStateOf(item));
-        const existingAsset = existing ? assets.find((row) => row.id === existing.asset_id) : undefined;
-        return {
-          stock: item,
-          asset,
-          product,
-          blockedBy: existingAsset?.code || existing?.stock_number || null,
-        };
-      })
-      .sort(
-        (a, b) =>
-          Number(Boolean(a.blockedBy)) - Number(Boolean(b.blockedBy)) ||
-          (a.product?.flavor || a.product?.name || "").localeCompare(b.product?.flavor || b.product?.name || "", "pt-BR") ||
-          a.asset.code.localeCompare(b.asset.code, "pt-BR")
-      );
-  }, [stock, locations, assets, products]);
-  const packingOpenable = packingCandidates.filter((row) => !row.blockedBy);
-
-  const runAssembly = async (action: () => Promise<void>, ok: string) => {
-    setAssemblyError("");
-    setAssemblyMessage("");
-    setAssemblySaving(true);
-    try {
-      await action();
-      setAssemblyMessage(ok);
-    } catch (err) {
-      setAssemblyError(err instanceof Error ? err.message : "Não foi possível concluir.");
-    } finally {
-      setAssemblySaving(false);
+  const assemblyConflict = (row: MovableBox, others: MovableBox[] = selected) => {
+    if (destination !== ASSEMBLY_DEST) return "";
+    const key = assemblyKey(row.stock);
+    if (others.some((item) => assemblyKey(item.stock) === key)) {
+      return "Só uma caixa de montagem por produto e estado.";
     }
-  };
-
-  const handleAssemblyScan = async (raw: string) => {
-    const code = normalizeCode(raw);
-    if (!code) return;
-    setAssemblyScan("");
-    const asset = assets.find((item) => item.code === code);
-    if (!asset) {
-      setAssemblyError(`${code} não cadastrada.`);
-      return;
+    const existing = findAssemblyBox(stock, row.stock.product_id, physicalStateOf(row.stock));
+    if (existing && existing.quantity > 0 && existing.id !== row.stock.id) {
+      const existingAsset = assets.find((item) => item.id === existing.asset_id);
+      return `Já existe montagem de ${row.product?.flavor || row.product?.name}: ${existingAsset?.code || existing.stock_number}.`;
     }
-    const live = stock.find(
-      (item) => item.asset_id === asset.id && (item.quantity > 0 || item.is_active_separation) && item.status !== "analysis"
-    );
-    if (!live) {
-      setAssemblyError(`${code} não tem produto disponível. Traga uma caixa de 100 deste sabor.`);
-      return;
-    }
-    if (live.is_active_separation && live.quantity <= 0) {
-      await runAssembly(() => scanEmptyAssemblyBox(live.id), `${code} vazia. Traga a próxima caixa de 100.`);
-      return;
-    }
-    if (live.is_active_separation) {
-      setAssemblyMessage(`${code} já é a caixa de montagem (${live.quantity} un).`);
-      return;
-    }
-    await runAssembly(() => promoteAssemblyBox(live.id), `${code} é a caixa de montagem agora.`);
+    return "";
   };
 
   const addBox = (row: MovableBox) => {
@@ -239,8 +163,13 @@ export function BatchTransferPage() {
       setMessage(`${row.asset.code} já está na lista.`);
       return false;
     }
-    if (destination && row.stock.location_id === destination) {
+    if (destination && destination !== ASSEMBLY_DEST && row.stock.location_id === destination) {
       setMessage(`${row.asset.code} já está no destino.`);
+      return false;
+    }
+    const conflict = assemblyConflict(row);
+    if (conflict) {
+      setMessage(conflict);
       return false;
     }
     setSelectedStockIds((current) => [...current, row.stock.id]);
@@ -277,15 +206,37 @@ export function BatchTransferPage() {
       setError("Escolha o destino.");
       return;
     }
-    if (selected.some((row) => row.stock.location_id === destination)) {
+    if (destination !== ASSEMBLY_DEST && selected.some((row) => row.stock.location_id === destination)) {
       setError("Uma das caixas já está no destino.");
       return;
+    }
+    if (destination === ASSEMBLY_DEST) {
+      if (!packing) {
+        setError("Cadastre o Packing Room para usar caixa de montagem.");
+        return;
+      }
+      for (const row of selected) {
+        const conflict = assemblyConflict(row, selected.filter((item) => item.stock.id !== row.stock.id));
+        if (conflict) {
+          setError(conflict);
+          return;
+        }
+      }
     }
 
     setSaving(true);
     try {
-      await transferBoxes(selectedStockIds, destination);
-      setDone(`${selected.length} caixa(s) movida(s) para ${activeLocations.find((l) => l.id === destination)?.name}.`);
+      if (destination === ASSEMBLY_DEST && packing) {
+        const toMove = selected.filter((row) => row.stock.location_id !== packing.id).map((row) => row.stock.id);
+        if (toMove.length) await transferBoxes(toMove, packing.id);
+        for (const row of selected) {
+          await promoteAssemblyBox(row.stock.id);
+        }
+        setDone(`${selected.length} caixa(s) na caixa de montagem.`);
+      } else {
+        await transferBoxes(selectedStockIds, destination);
+        setDone(`${selected.length} caixa(s) movida(s) para ${activeLocations.find((l) => l.id === destination)?.name}.`);
+      }
       setSelectedStockIds([]);
       setOriginId("");
       setDestination("");
@@ -303,7 +254,7 @@ export function BatchTransferPage() {
         <p className="text-sm font-semibold text-primary tracking-wider uppercase">Movimentar</p>
         <h1 className="text-3xl font-bold tracking-tight mt-1">Transferir caixas</h1>
         <p className="text-muted-foreground mt-1">
-          Caixas de 100 mudam de local. No packing, escolha a caixa de montagem de cada sabor.
+          Caixas de 100 mudam de local. Destino caixa de montagem: uma por produto e estado.
         </p>
       </div>
 
@@ -446,15 +397,37 @@ export function BatchTransferPage() {
           <select
             className="flex h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
             value={destination}
-            onChange={(e) => setDestination(e.target.value)}
+            onChange={(e) => {
+              const next = e.target.value;
+              setDestination(next);
+              if (next === ASSEMBLY_DEST) {
+                const kept: string[] = [];
+                const seen = new Set<string>();
+                for (const row of selected) {
+                  const key = assemblyKey(row.stock);
+                  if (seen.has(key)) continue;
+                  const existing = findAssemblyBox(stock, row.stock.product_id, physicalStateOf(row.stock));
+                  if (existing && existing.quantity > 0 && existing.id !== row.stock.id) continue;
+                  seen.add(key);
+                  kept.push(row.stock.id);
+                }
+                setSelectedStockIds(kept);
+              }
+            }}
           >
             <option value="">Escolher local…</option>
+            <option value={ASSEMBLY_DEST}>Caixa de montagem</option>
             {destinationOptions.map((location) => (
               <option key={location.id} value={location.id}>
                 {location.name}
               </option>
             ))}
           </select>
+          {destination === ASSEMBLY_DEST && (
+            <p className="text-xs text-muted-foreground">
+              Uma caixa por produto e estado. Elas vão para o packing como caixa de montagem.
+            </p>
+          )}
           {selected.length > 0 && (
             <p className="text-sm text-muted-foreground">
               {selected.length} caixa{selected.length === 1 ? "" : "s"} · {totalPops.toLocaleString("pt-BR")} un
@@ -470,139 +443,6 @@ export function BatchTransferPage() {
         {saving ? "Transferindo…" : "Confirmar transferência"}
       </Button>
     </form>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Escolher caixa de montagem</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            Uma por sabor e estado. Só ela pode ter menos de 100. Depois de vazia, escaneie-a e traga a próxima caixa
-            de 100.
-          </p>
-
-          {assemblyBoxes.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhuma aberta ainda.</p>
-          ) : (
-            <ul className="space-y-2">
-              {assemblyBoxes.map((item) => {
-                const product = products.find((row) => row.id === item.product_id);
-                const asset = assets.find((row) => row.id === item.asset_id);
-                const location = locations.find((row) => row.id === item.location_id);
-                const empty = item.quantity <= 0;
-                return (
-                  <li
-                    key={item.id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-medium">{product?.flavor || product?.name}</p>
-                      <p className="text-xs text-muted-foreground font-mono">
-                        {asset?.code} · {location?.name || "—"} · {item.grade || "—"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="text-[10px] font-normal">
-                        {stateLabel(physicalStateOf(item))}
-                      </Badge>
-                      <Badge variant={empty ? "destructive" : "secondary"}>
-                        {empty ? "Vazia" : `${item.quantity} / ${boxCapacity(item, assets)}`}
-                      </Badge>
-                      {empty && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={assemblySaving}
-                          onClick={() =>
-                            void runAssembly(
-                              () => scanEmptyAssemblyBox(item.id),
-                              `${asset?.code} vazia. Traga a próxima caixa de 100.`
-                            )
-                          }
-                        >
-                          Escanear vazia
-                        </Button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <QrCode className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                ref={assemblyScannerRef}
-                value={assemblyScan}
-                onChange={(e) => setAssemblyScan(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void handleAssemblyScan(assemblyScan);
-                  }
-                }}
-                placeholder="Escanear caixa média…"
-                className="h-12 pl-8 font-mono"
-              />
-            </div>
-            <Button
-              type="button"
-              className="h-12"
-              disabled={assemblySaving}
-              onClick={() => void handleAssemblyScan(assemblyScan)}
-            >
-              Confirmar
-            </Button>
-          </div>
-
-          <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">Ou escolha uma caixa do packing room</p>
-            <select
-              className="flex h-12 w-full rounded-md border border-input bg-background px-3 text-sm"
-              value=""
-              disabled={assemblySaving}
-              onChange={(e) => {
-                const stockId = e.target.value;
-                if (!stockId) return;
-                const row = packingOpenable.find((item) => item.stock.id === stockId);
-                if (!row) return;
-                void runAssembly(
-                  () => promoteAssemblyBox(row.stock.id),
-                  `${row.asset.code} é a caixa de montagem agora.`
-                );
-              }}
-            >
-              <option value="">
-                {packingOpenable.length
-                  ? "Caixa do packing room…"
-                  : packingCandidates.length
-                    ? "Já existe montagem para estes sabores"
-                    : "Nenhuma caixa no packing room"}
-              </option>
-              {packingOpenable.map((row) => (
-                <option key={row.stock.id} value={row.stock.id}>
-                  {row.asset.code} · {row.product?.flavor || row.product?.name} · {row.stock.quantity} un ·{" "}
-                  {stateLabel(physicalStateOf(row.stock))}
-                  {row.stock.grade ? ` · ${row.stock.grade}` : ""}
-                </option>
-              ))}
-              {packingCandidates
-                .filter((row) => row.blockedBy)
-                .map((row) => (
-                  <option key={row.stock.id} value="" disabled>
-                    {row.asset.code} · {row.product?.flavor || row.product?.name} · já tem montagem ({row.blockedBy})
-                  </option>
-                ))}
-            </select>
-          </div>
-
-          {assemblyError && <p className="text-sm text-destructive">{assemblyError}</p>}
-          {assemblyMessage && <p className="text-sm text-emerald-700">{assemblyMessage}</p>}
-        </CardContent>
-      </Card>
     </div>
   );
 }

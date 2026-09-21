@@ -147,6 +147,12 @@ interface AppState {
   adjustBoxTypeQuantity: (type: Asset['type'], newQuantity: number, locationId?: string | null) => Promise<void>;
   moveBoxTypeLocation: (type: Asset['type'], fromLocationId: string | null, toLocationId: string | null) => Promise<void>;
   updateMaterialStock: (id: string, data: Partial<MaterialStock>) => Promise<void>;
+  adjustMaterialLine: (input: {
+    stockId?: string | null;
+    productId: string;
+    quantity: number;
+    locationId: string;
+  }) => Promise<void>;
   updateOrder: (id: string, data: Partial<Order>) => Promise<void>;
   updateOrderItem: (id: string, data: Partial<OrderItem>) => Promise<void>;
   updateSeparationJob: (id: string, data: Partial<SeparationJob>) => Promise<void>;
@@ -199,6 +205,7 @@ interface AppState {
   withdrawFromBox: (boxId: string, quantity: number, reason: string) => Promise<void>;
   promoteAssemblyBox: (stockId: string) => Promise<void>;
   scanEmptyAssemblyBox: (stockId: string) => Promise<void>;
+  replaceEmptyAssemblyBox: (emptyStockId: string, incomingCode: string) => Promise<void>;
   assembleSku: (productId: string, quantity: number, physicalState: PhysicalState) => Promise<void>;
   unbuildSku: (stockId: string, quantity: number) => Promise<void>;
   
@@ -3780,6 +3787,85 @@ export const useAppStore = create<AppState>((set, get) => ({
       materialStock: s.materialStock.map(m => m.id === id ? { ...m, ...data, updated_at: now } : m)
     }));
   },
+
+  adjustMaterialLine: async ({ stockId, productId, quantity, locationId }) => {
+    if (!Number.isFinite(quantity) || quantity < 0 || Math.round(quantity) !== quantity) {
+      throw new Error('Informe uma quantidade inteira maior ou igual a zero.');
+    }
+    const product = get().products.find((item) => item.id === productId && item.kind === 'material');
+    if (!product) throw new Error('Material não encontrado.');
+    const location = get().locations.find((item) => item.id === locationId);
+    if (!location) throw new Error('Escolha o local do material.');
+    const target = Math.round(quantity);
+    const now = new Date().toISOString();
+    const existing = stockId ? get().materialStock.find((item) => item.id === stockId) : undefined;
+    if (existing && existing.quantity === target && existing.location_id === locationId) return;
+
+    rememberCodes(get().movements.map((row) => row.movement_number));
+    await rememberRemoteMovementNumbers();
+    const movement: Movement = {
+      id: generateId(),
+      movement_number: generateMovementNumber(),
+      type: existing && existing.location_id !== locationId && existing.quantity === target ? 'transfer' : 'adjustment',
+      stock_id: null,
+      asset_id: null,
+      order_id: null,
+      inspection_id: null,
+      inventory_count_id: null,
+      from_location_id: existing?.location_id || null,
+      to_location_id: locationId,
+      quantity: existing ? Math.abs(target - existing.quantity) : target,
+      quantity_before: existing?.quantity ?? 0,
+      quantity_after: target,
+      reason: 'Ajuste administrativo de material',
+      notes: product.code,
+      created_by: null,
+      created_at: now,
+    };
+
+    if (existing) {
+      if (isSupabaseConfigured && supabase) {
+        const { error } = await supabase
+          .from('material_stock')
+          .update({ quantity: target, location_id: locationId, updated_at: now })
+          .eq('id', existing.id);
+        if (error) throw new Error(error.message);
+        await persistMovements([movement]);
+      }
+      set((state) => ({
+        materialStock: state.materialStock.map((item) =>
+          item.id === existing.id
+            ? { ...item, quantity: target, location_id: locationId, updated_at: now }
+            : item
+        ),
+        movements: [movement, ...state.movements],
+      }));
+      return;
+    }
+
+    const created: MaterialStock = {
+      id: generateId(),
+      stock_number: generateStockNumber('MAT'),
+      product_id: productId,
+      quantity: target,
+      location_id: locationId,
+      status: 'available',
+      lot: null,
+      receipt_id: null,
+      source_box_codes: null,
+      created_at: now,
+      updated_at: now,
+    };
+    if (isSupabaseConfigured && supabase) {
+      const { error } = await supabase.from('material_stock').insert(created);
+      if (error) throw new Error(error.message);
+      await persistMovements([movement]);
+    }
+    set((state) => ({
+      materialStock: [...state.materialStock, created],
+      movements: [movement, ...state.movements],
+    }));
+  },
   
   updateOrder: async (id, data) => {
     const now = new Date().toISOString();
@@ -4848,10 +4934,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (stock.quantity <= 0 || stock.status === 'depleted') {
       throw new Error('Esta caixa está vazia. Escaneie-a vazia e traga uma caixa de 100.');
     }
-    if (!stock.asset_id) throw new Error('Só caixa média vira caixa de montagem.');
+    if (!stock.asset_id) throw new Error('Só embalagem vai-vem vira caixa de montagem.');
     const asset = state.assets.find((item) => item.id === stock.asset_id);
-    if (!asset || asset.type !== 'caixa_media') {
-      throw new Error('Só caixa média vira caixa de montagem.');
+    if (!asset || !isBoxAsset(asset)) {
+      throw new Error('Só embalagem vai-vem vira caixa de montagem.');
     }
     if (stock.is_active_separation) return;
     const existing = findAssemblyBox(state.stock, stock.product_id, physicalStateOf(stock));
@@ -4945,6 +5031,41 @@ export const useAppStore = create<AppState>((set, get) => ({
       ),
       movements: [movement, ...current.movements],
     }));
+  },
+
+  replaceEmptyAssemblyBox: async (emptyStockId, incomingCode) => {
+    const code = incomingCode.trim().toUpperCase().replace(/[\s_]+/g, '-');
+    if (!code) throw new Error('Escaneie a próxima caixa.');
+    const empty = get().stock.find((item) => item.id === emptyStockId);
+    if (!empty || !empty.is_active_separation) {
+      throw new Error('Esta não é a caixa de montagem.');
+    }
+    if (empty.quantity > 0) {
+      throw new Error(`Ainda há ${empty.quantity} un em ${empty.stock_number}. Esvazie antes de trocar.`);
+    }
+    const incomingAsset = get().assets.find((item) => item.code === code);
+    if (!incomingAsset || !isBoxAsset(incomingAsset)) {
+      throw new Error(`${code} não é uma embalagem cadastrada.`);
+    }
+    const incoming = get().stock.find(
+      (item) =>
+        item.asset_id === incomingAsset.id &&
+        item.quantity > 0 &&
+        item.status !== 'depleted' &&
+        item.status !== 'analysis'
+    );
+    if (!incoming) {
+      throw new Error(`${code} não tem produto. Traga a caixa cheia deste sabor.`);
+    }
+    if (incoming.product_id !== empty.product_id || physicalStateOf(incoming) !== physicalStateOf(empty)) {
+      throw new Error(`${code} não é do mesmo produto e estado desta caixa de montagem.`);
+    }
+    const targetLocationId = empty.location_id;
+    await get().scanEmptyAssemblyBox(emptyStockId);
+    if (incoming.location_id !== targetLocationId) {
+      await get().transferBoxes([incoming.id], targetLocationId);
+    }
+    await get().promoteAssemblyBox(incoming.id);
   },
 
   assembleSku: async (productId, quantity, physicalState) => {

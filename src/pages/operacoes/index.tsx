@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowDown,
@@ -5,8 +6,12 @@ import {
   ArrowLeftRight,
   Grid3X3,
   ArrowRight,
+  Droplets,
+  Snowflake,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { CameraQrButton } from "@/components/camera-qr-button";
+import { isAssemblyBox, physicalStateOf, stateLabel } from "@/lib/assembly";
 import { useAppStore } from "@/stores";
 
 interface ActionCardProps {
@@ -50,6 +55,77 @@ function ActionCard({
   );
 }
 
+function AssemblyBoxesPanel() {
+  const { stock, products, assets, replaceEmptyAssemblyBox } = useAppStore();
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const boxes = stock
+    .filter((item) => isAssemblyBox(item))
+    .sort((a, b) => {
+      const left = products.find((product) => product.id === a.product_id);
+      const right = products.find((product) => product.id === b.product_id);
+      const leftName = `${left?.name || ""} ${left?.code || ""}`.trim();
+      const rightName = `${right?.name || ""} ${right?.code || ""}`.trim();
+      return leftName.localeCompare(rightName, "pt-BR");
+    });
+
+  return (
+    <div className="w-full min-w-0 flex-1 rounded-2xl border bg-card p-4 text-left md:max-w-2xl">
+      <p className="text-sm font-semibold">Caixas de Montagem</p>
+      {boxes.length === 0 ? (
+        <p className="mt-2 text-xs text-muted-foreground">Nenhuma aberta.</p>
+      ) : (
+        <ul className="mt-2 divide-y">
+          {boxes.map((item) => {
+            const product = products.find((row) => row.id === item.product_id);
+            const asset = assets.find((row) => row.id === item.asset_id);
+            const empty = item.quantity <= 0;
+            const frozen = physicalStateOf(item) === "frozen";
+            return (
+              <li key={item.id} className="flex h-10 items-center gap-3 text-sm">
+                <span className="min-w-0 flex-1 truncate font-medium">{product?.name || "—"}</span>
+                {product?.code ? (
+                  <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs">{product.code}</code>
+                ) : null}
+                <Badge
+                  variant="secondary"
+                  className={`shrink-0 text-xs font-normal ${
+                    frozen
+                      ? "bg-sky-100 text-sky-700 hover:bg-sky-100"
+                      : "bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-100"
+                  }`}
+                >
+                  {frozen ? <Snowflake className="mr-1 h-3 w-3" /> : <Droplets className="mr-1 h-3 w-3" />}
+                  {stateLabel(physicalStateOf(item))}
+                </Badge>
+                <code className="shrink-0 font-mono text-xs">{asset?.code || item.stock_number}</code>
+                <span className="w-16 shrink-0 text-right text-xs text-muted-foreground">
+                  {empty ? "vazia" : `${item.quantity} un`}
+                </span>
+                <span className="w-10 shrink-0">
+                  <CameraQrButton
+                    onResult={(code) => {
+                      setError("");
+                      setMessage("");
+                      void replaceEmptyAssemblyBox(item.id, code)
+                        .then(() => setMessage(`${code} é a caixa de montagem agora.`))
+                        .catch((err) =>
+                          setError(err instanceof Error ? err.message : "Não foi possível trocar a caixa.")
+                        );
+                    }}
+                  />
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
+      {message ? <p className="mt-2 text-xs text-emerald-700">{message}</p> : null}
+    </div>
+  );
+}
+
 export function OperacoesPage() {
   const { receipts } = useAppStore();
 
@@ -59,16 +135,19 @@ export function OperacoesPage() {
 
   return (
     <div className="min-h-[calc(100vh-8rem)] flex flex-col justify-center">
-      <div className="py-8 md:py-12 text-center md:text-left">
-        <span className="text-sm font-semibold text-primary tracking-wider uppercase">
-          OPERAÇÕES
-        </span>
-        <h1 className="text-3xl md:text-4xl font-bold mt-3">
-          O que vamos fazer?
-        </h1>
-        <p className="text-lg text-muted-foreground mt-2">
-          Escolha uma ação operacional.
-        </p>
+      <div className="flex flex-col gap-6 py-8 md:flex-row md:items-start md:justify-between md:py-12">
+        <div className="text-center md:text-left">
+          <span className="text-sm font-semibold text-primary tracking-wider uppercase">
+            OPERAÇÕES
+          </span>
+          <h1 className="text-3xl md:text-4xl font-bold mt-3">
+            O que vamos fazer?
+          </h1>
+          <p className="text-lg text-muted-foreground mt-2">
+            Escolha uma ação operacional.
+          </p>
+        </div>
+        <AssemblyBoxesPanel />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

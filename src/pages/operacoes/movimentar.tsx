@@ -47,7 +47,7 @@ export function MovimentarPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <SubActionCard
           title="Transferir caixas"
-          description="Levar caixas de 100 e escolher a caixa de montagem no packing."
+          description="Levar caixas de 100 ou definir a caixa de montagem como destino."
           icon={<Boxes className="w-7 h-7" />}
           to="/operacoes/movimentar/transferir"
         />

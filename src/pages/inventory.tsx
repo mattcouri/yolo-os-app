@@ -682,7 +682,212 @@ function ExpandedDetails({ row }: { row: SkuLocationRow }) {
   );
 }
 
+type MaterialLineRow = {
+  id: string;
+  stockId: string | null;
+  productId: string;
+  sku: string;
+  name: string;
+  quantity: number;
+  locationId: string;
+  locationName: string;
+  search: string;
+};
+
+function MaterialTotalsTable() {
+  const { products, materialStock, locations, adjustMaterialLine } = useAppStore();
+  const materialLocations = useMemo(() => locationsForKind(locations, "material"), [locations]);
+  const [drafts, setDrafts] = useState<Record<string, { quantity: string; locationId: string }>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const rows = useMemo<MaterialLineRow[]>(() => {
+    const locationName = (id: string) => locations.find((item) => item.id === id)?.name || "—";
+    const seen = new Set<string>();
+    const lines: MaterialLineRow[] = materialStock.map((item) => {
+        const product = products.find((row) => row.id === item.product_id);
+        seen.add(item.product_id);
+        return {
+          id: item.id,
+          stockId: item.id,
+          productId: item.product_id,
+          sku: product?.code || "—",
+          name: product?.name || "—",
+          quantity: item.quantity,
+          locationId: item.location_id,
+          locationName: locationName(item.location_id),
+          search: `${product?.code || ""} ${product?.name || ""} ${locationName(item.location_id)}`.toLowerCase(),
+        };
+      });
+    for (const product of products.filter((item) => item.kind === "material" && item.is_active !== false)) {
+      if (seen.has(product.id)) continue;
+      lines.push({
+        id: `new:${product.id}`,
+        stockId: null,
+        productId: product.id,
+        sku: product.code,
+        name: product.name || "—",
+        quantity: 0,
+        locationId: materialLocations[0]?.id || "",
+        locationName: materialLocations[0]?.name || "—",
+        search: `${product.code} ${product.name || ""}`.toLowerCase(),
+      });
+    }
+    return lines.sort(
+      (a, b) => a.sku.localeCompare(b.sku, "pt-BR") || a.locationName.localeCompare(b.locationName, "pt-BR")
+    );
+  }, [products, materialStock, locations, materialLocations]);
+
+  const draftOf = (row: MaterialLineRow) =>
+    drafts[row.id] || { quantity: String(row.quantity), locationId: row.locationId };
+
+  const save = async (row: MaterialLineRow) => {
+    const draft = draftOf(row);
+    const next = Number(draft.quantity);
+    if (!Number.isFinite(next) || next < 0 || Math.round(next) !== next) {
+      setError("Informe uma quantidade inteira maior ou igual a zero.");
+      return;
+    }
+    if (!draft.locationId) {
+      setError("Escolha o local do material.");
+      return;
+    }
+    setSavingId(row.id);
+    setError(null);
+    try {
+      await adjustMaterialLine({
+        stockId: row.stockId,
+        productId: row.productId,
+        quantity: next,
+        locationId: draft.locationId,
+      });
+      setDrafts((current) => {
+        const { [row.id]: _ignored, ...rest } = current;
+        return rest;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível salvar o material.");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Todos os materiais</CardTitle>
+            <CardDescription>Altere a quantidade e o local de cada linha e salve.</CardDescription>
+          </div>
+          <Badge variant="secondary">{rows.length}</Badge>
+        </div>
+        {error ? <p className="pt-2 text-sm text-destructive">{error}</p> : null}
+      </CardHeader>
+      <CardContent className="pt-0">
+        <DataTable
+          data={rows}
+          searchKey="search"
+          searchPlaceholder="Buscar material ou local…"
+          emptyMessage="Nenhum material cadastrado."
+          maxHeight="calc(100vh - 280px)"
+          actionsHeader="Salvar"
+          columns={[
+            {
+              key: "sku",
+              header: "Código",
+              width: "w-28",
+              align: "center",
+              sortable: true,
+              render: (row) => <span className="font-mono text-xs">{row.sku}</span>,
+            },
+            { key: "name", header: "Material", sortable: true },
+            {
+              key: "locationName",
+              header: "Local",
+              sortable: true,
+              render: (row) => (
+                <select
+                  className="h-8 max-w-[14rem] rounded-md border border-input bg-background px-2 text-xs"
+                  value={draftOf(row).locationId}
+                  onChange={(event) =>
+                    setDrafts((current) => ({
+                      ...current,
+                      [row.id]: { ...draftOf(row), locationId: event.target.value },
+                    }))
+                  }
+                >
+                  {materialLocations.length === 0 ? <option value="">Cadastre um local de material</option> : null}
+                  {materialLocations.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))}
+                  {row.locationId && !materialLocations.some((location) => location.id === row.locationId) ? (
+                    <option value={row.locationId}>{row.locationName}</option>
+                  ) : null}
+                </select>
+              ),
+            },
+            {
+              key: "quantity",
+              header: "Quantidade",
+              width: "w-28",
+              align: "center",
+              sortable: true,
+              render: (row) => (
+                <Input
+                  type="number"
+                  min={0}
+                  step={1}
+                  className="mx-auto h-8 w-[5.5rem] text-center text-xs"
+                  value={draftOf(row).quantity}
+                  disabled={savingId === row.id}
+                  onChange={(event) =>
+                    setDrafts((current) => ({
+                      ...current,
+                      [row.id]: { ...draftOf(row), quantity: event.target.value },
+                    }))
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void save(row);
+                  }}
+                />
+              ),
+            },
+          ]}
+          actions={(row) => {
+            const draft = draftOf(row);
+            const dirty = draft.quantity !== String(row.quantity) || draft.locationId !== row.locationId;
+            const saving = savingId === row.id;
+            return (
+              <Button
+                type="button"
+                variant={dirty ? "default" : "ghost"}
+                size="sm"
+                className="h-7 px-2 text-xs"
+                disabled={!dirty || saving}
+                onClick={() => void save(row)}
+              >
+                {saving ? "…" : "Salvar"}
+              </Button>
+            );
+          }}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+export function MaterialsPage() {
+  return <InventoryBoard kind="material" />;
+}
+
 export function InventoryPage() {
+  return <InventoryBoard kind="sku" />;
+}
+
+function InventoryBoard({ kind }: { kind: "sku" | "material" }) {
   const {
     locations,
     products,
@@ -719,14 +924,7 @@ export function InventoryPage() {
       .map((id) => defaults.find((location) => location.id === id))
       .filter((location): location is Location => Boolean(location));
   }, [locations, kanbanColumnOrders]);
-  const boardLocations = useMemo(() => {
-    const seen = new Set<string>();
-    return [...skuLocations, ...materialLocations].filter((location) => {
-      if (seen.has(location.id)) return false;
-      seen.add(location.id);
-      return true;
-    });
-  }, [skuLocations, materialLocations]);
+  const boardLocations = kind === "material" ? materialLocations : skuLocations;
 
   const rows = useMemo(
     () => buildRows(locations, products, assets, stock, materialStock, productComponents),
@@ -735,6 +933,13 @@ export function InventoryPage() {
   const filtered = rows.filter((row) => row.search.toLowerCase().includes(search.toLowerCase().trim()));
   const skuRows = filtered.filter((row) => row.kind === "pop");
   const materialRows = filtered.filter((row) => row.kind === "material");
+  const listRows = kind === "material" ? materialRows : skuRows;
+  const liveMaterials = materialStock.filter((item) => item.quantity > 0 && item.status !== "depleted");
+  const totalMaterials = liveMaterials.reduce((sum, item) => sum + item.quantity, 0);
+  const analysisMaterials = liveMaterials
+    .filter((item) => item.status === "analysis")
+    .reduce((sum, item) => sum + item.quantity, 0);
+  const availableMaterials = Math.max(0, totalMaterials - analysisMaterials);
   const countable = stock.filter(isCountablePop);
   const popUnits = (item: Stock) => stockPopUnits(item, products, productComponents);
   const totalPops = countable.reduce((sum, item) => sum + popUnits(item), 0);
@@ -771,8 +976,14 @@ export function InventoryPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Inventário</h1>
-          <p className="text-muted-foreground">Estoque real por localização e SKU</p>
+          <h1 className="text-3xl font-bold tracking-tight">
+            {kind === "material" ? "Materiais" : "Inventário - SKUs"}
+          </h1>
+          <p className="text-muted-foreground">
+            {kind === "material"
+              ? "Estoque real de materiais por localização"
+              : "Estoque real de SKUs por localização"}
+          </p>
         </div>
         <Button asChild>
           <Link to="/operacoes/receber">
@@ -783,67 +994,101 @@ export function InventoryPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Total</CardDescription>
-            <CardTitle className="text-3xl">{totalPops.toLocaleString("pt-BR")}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1 pt-0 text-sm">
-            <p className="text-xs text-muted-foreground">pops, sem rejeito (unidades + SKUs montados)</p>
-            <div className="flex justify-between gap-2 pt-1">
-              <span className="text-muted-foreground">Reservado</span>
-              <span className="font-semibold">{reservedPops.toLocaleString("pt-BR")}</span>
-            </div>
-            <div className="flex justify-between gap-2">
-              <span className="text-muted-foreground">Livre</span>
-              <span className="font-semibold">{livrePops.toLocaleString("pt-BR")}</span>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Estado</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-1.5 pt-0">
-            <div className="flex items-center justify-between text-sm">
-              <span className="inline-flex items-center gap-1.5 text-fuchsia-700">
-                <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-fuchsia-100">
-                  <Droplets className="h-3 w-3" />
-                </span>
-                Líquido
-              </span>
-              <span className="font-semibold">{totalLiquid.toLocaleString("pt-BR")}</span>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="inline-flex items-center gap-1.5 text-sky-700">
-                <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-sky-100">
-                  <Snowflake className="h-3 w-3" />
-                </span>
-                Congelado
-              </span>
-              <span className="font-semibold">{totalFrozen.toLocaleString("pt-BR")}</span>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Classificação</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-1 pt-0 text-sm">
-            <div className="flex justify-between gap-2">
-              <span className="text-muted-foreground">AAA</span>
-              <span className="font-semibold">{totalAaa.toLocaleString("pt-BR")}</span>
-            </div>
-            <div className="flex justify-between gap-2">
-              <span className="text-muted-foreground">B</span>
-              <span className="font-semibold">{totalB.toLocaleString("pt-BR")}</span>
-            </div>
-            <div className="flex justify-between gap-2">
-              <span className="text-muted-foreground">C</span>
-              <span className="font-semibold">{totalC.toLocaleString("pt-BR")}</span>
-            </div>
-          </CardContent>
-        </Card>
+        {kind === "material" ? (
+          <>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Total</CardDescription>
+                <CardTitle className="text-3xl">{totalMaterials.toLocaleString("pt-BR")}</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 text-sm">
+                <p className="text-xs text-muted-foreground">unidades de material em estoque</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Disponível</CardDescription>
+                <CardTitle className="text-3xl">{availableMaterials.toLocaleString("pt-BR")}</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 text-sm">
+                <p className="text-xs text-muted-foreground">fora de análise</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Análise</CardDescription>
+                <CardTitle className="text-3xl">{analysisMaterials.toLocaleString("pt-BR")}</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 text-sm">
+                <p className="text-xs text-muted-foreground">ainda em conferência</p>
+              </CardContent>
+            </Card>
+          </>
+        ) : (
+          <>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Total</CardDescription>
+                <CardTitle className="text-3xl">{totalPops.toLocaleString("pt-BR")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1 pt-0 text-sm">
+                <p className="text-xs text-muted-foreground">pops, sem rejeito (unidades + SKUs montados)</p>
+                <div className="flex justify-between gap-2 pt-1">
+                  <span className="text-muted-foreground">Reservado</span>
+                  <span className="font-semibold">{reservedPops.toLocaleString("pt-BR")}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">Livre</span>
+                  <span className="font-semibold">{livrePops.toLocaleString("pt-BR")}</span>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Estado</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-1.5 pt-0">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="inline-flex items-center gap-1.5 text-fuchsia-700">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-fuchsia-100">
+                      <Droplets className="h-3 w-3" />
+                    </span>
+                    Líquido
+                  </span>
+                  <span className="font-semibold">{totalLiquid.toLocaleString("pt-BR")}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="inline-flex items-center gap-1.5 text-sky-700">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-sky-100">
+                      <Snowflake className="h-3 w-3" />
+                    </span>
+                    Congelado
+                  </span>
+                  <span className="font-semibold">{totalFrozen.toLocaleString("pt-BR")}</span>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Classificação</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-1 pt-0 text-sm">
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">AAA</span>
+                  <span className="font-semibold">{totalAaa.toLocaleString("pt-BR")}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">B</span>
+                  <span className="font-semibold">{totalB.toLocaleString("pt-BR")}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">C</span>
+                  <span className="font-semibold">{totalC.toLocaleString("pt-BR")}</span>
+                </div>
+              </CardContent>
+            </Card>
+          </>
+        )}
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>Localizações</CardDescription>
@@ -858,7 +1103,7 @@ export function InventoryPage() {
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          placeholder="Buscar SKU, sabor, local ou lote…"
+          placeholder={kind === "material" ? "Buscar material, local ou lote…" : "Buscar SKU, sabor, local ou lote…"}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="pl-9"
@@ -875,7 +1120,25 @@ export function InventoryPage() {
           {boardLocations.length === 0 ? (
             <p className="text-sm text-muted-foreground">Cadastre localizações em Cadastros.</p>
           ) : (
-            <>
+            kind === "material" ? (
+              <InventoryKanban
+                title="Materiais"
+                locations={materialLocations}
+                rows={materialRows}
+                expanded={expanded}
+                onToggle={(id) => setExpanded(expanded === id ? null : id)}
+                onReorder={(ids) => {
+                  void saveKanbanColumnOrder(KANBAN_BOARDS.inventoryMaterial, ids);
+                }}
+                emptyBoard="Nenhum material em estoque."
+                header={(_location, cards) => ({
+                  units: cards.reduce((sum, row) => sum + row.total, 0),
+                  liquid: 0,
+                  frozen: 0,
+                  showState: false,
+                })}
+              />
+            ) : (
               <InventoryKanban
                 title="SKUs e produtos montados"
                 locations={skuLocations}
@@ -900,32 +1163,19 @@ export function InventoryPage() {
                   };
                 }}
               />
-              <InventoryKanban
-                title="Materiais"
-                locations={materialLocations}
-                rows={materialRows}
-                expanded={expanded}
-                onToggle={(id) => setExpanded(expanded === id ? null : id)}
-                onReorder={(ids) => {
-                  void saveKanbanColumnOrder(KANBAN_BOARDS.inventoryMaterial, ids);
-                }}
-                emptyBoard="Nenhum material em estoque."
-                header={(_location, cards) => ({
-                  units: cards.reduce((sum, row) => sum + row.total, 0),
-                  liquid: 0,
-                  frozen: 0,
-                  showState: false,
-                })}
-              />
-            </>
+            )
           )}
         </TabsContent>
 
         <TabsContent value="list">
           <DataTable
-            data={filtered}
+            data={listRows}
             maxHeight="70vh"
-            emptyMessage="Nenhum estoque registrado. Receba uma nota fiscal para começar."
+            emptyMessage={
+              kind === "material"
+                ? "Nenhum material em estoque."
+                : "Nenhum estoque registrado. Receba uma nota fiscal para começar."
+            }
             columns={[
               { key: "sku", header: "SKU", sortable: true, render: (row) => <span className="font-mono text-xs">{row.sku}</span> },
               { key: "name", header: "Produto", sortable: true },
@@ -992,7 +1242,7 @@ export function InventoryPage() {
             <Card className="mt-3">
               <CardContent className="p-4">
                 {(() => {
-                  const row = filtered.find((item) => `list:${item.id}` === expanded);
+                  const row = listRows.find((item) => `list:${item.id}` === expanded);
                   if (!row) return null;
                   return (
                     <div>
@@ -1009,7 +1259,7 @@ export function InventoryPage() {
         </TabsContent>
       </Tabs>
 
-      <SkuTotalsTable />
+      {kind === "material" ? <MaterialTotalsTable /> : <SkuTotalsTable />}
     </div>
   );
 }

@@ -27,6 +27,7 @@ import { InventoryCountPage } from "@/pages/operations/inventory-count";
 import { OrderRequestPage, OrderListPage } from "@/pages/orders/request";
 import { SeparationBoardPage, SeparationJobPage } from "@/pages/separation";
 import { InventoryPage } from "@/pages/inventory";
+import { MaterialsPage } from "@/pages/materiais";
 import { SettingsPage } from "@/pages/settings";
 import { AssetDetailPage } from "@/pages/assets/detail";
 import { UsersPage } from "@/pages/gestao/users";
@@ -329,6 +330,14 @@ export default function App() {
           element={
             <ManagementRoute>
               <InventoryPage />
+            </ManagementRoute>
+          }
+        />
+        <Route
+          path="/gestao/materiais"
+          element={
+            <ManagementRoute>
+              <MaterialsPage />
             </ManagementRoute>
           }
         />

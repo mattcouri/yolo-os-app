@@ -15,8 +15,18 @@ export function restockNote(productId: string, state: PhysicalState) {
   return `${RESTOCK_NOTE_PREFIX}${productId}:${state}`;
 }
 
+export const ASSEMBLY_DEST = "__caixa_montagem__";
+
 export function isPackingRoom(location?: Location | null) {
   return Boolean(location?.name && /packing/i.test(location.name));
+}
+
+export function packingRoomLocation(locations: Location[]) {
+  return locations.find((location) => isPackingRoom(location));
+}
+
+export function assemblyKey(stock: Pick<Stock, "product_id" | "physical_state">) {
+  return `${stock.product_id}:${physicalStateOf(stock)}`;
 }
 
 export function assembledLocation(locations: Location[]) {
