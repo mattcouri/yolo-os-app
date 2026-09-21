@@ -176,7 +176,8 @@ function buildRows(
   stock: Stock[],
   products: Product[],
   movements: Movement[],
-  locations: Location[]
+  locations: Location[],
+  typeCatalog?: { value: string; label: string }[]
 ): BoxRow[] {
   return assets
     .filter(isBoxAsset)
@@ -197,14 +198,14 @@ function buildRows(
       return {
         ...asset,
         type: asset.type,
-        typeLabel: boxTypeLabel(asset.type),
+        typeLabel: boxTypeLabel(asset.type, typeCatalog),
         columnId,
         locationName,
         statusLabel: statusText,
         full: contents.full,
         fillLabel,
         lastMoveAt,
-        search: [asset.code, asset.name, boxTypeLabel(asset.type), locationName, statusText, fillLabel]
+        search: [asset.code, asset.name, boxTypeLabel(asset.type, typeCatalog), locationName, statusText, fillLabel]
           .join(" ")
           .toLowerCase(),
       };
@@ -224,6 +225,7 @@ export function PackagingPage() {
     createMovement,
     kanbanColumnOrders,
     saveKanbanColumnOrder,
+    boxTypes,
   } = useAppStore();
   const [filter, setFilter] = useState<FilterId>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -233,8 +235,8 @@ export function PackagingPage() {
 
   const yardLocations = useMemo(() => orderedBoxYardLocations(locations), [locations]);
   const patio = useMemo(
-    () => buildRows(assets, stock, products, movements, locations),
-    [assets, stock, products, movements, locations]
+    () => buildRows(assets, stock, products, movements, locations, boxTypes),
+    [assets, stock, products, movements, locations, boxTypes]
   );
   const columns = useMemo(
     () =>

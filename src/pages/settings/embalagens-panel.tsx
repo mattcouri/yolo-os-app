@@ -28,12 +28,6 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { useAppStore } from "@/stores";
 import type { Asset, Location } from "@/types/database";
 
-const defaultBoxTypes: SelectOption[] = [
-  { value: "caixa_media", label: "Caixa Média" },
-  { value: "caixa_preta", label: "Caixa Preta" },
-  { value: "caixa_grande", label: "Caixa Grande" },
-];
-
 const emptyForm = {
   type: "caixa_media",
   quantity: "1",
@@ -164,25 +158,33 @@ const STATUS_MAP: Record<string, { label: string; variant: "default" | "secondar
 };
 
 export function EmbalagensPanel() {
-  const { assets, locations, createAssets, updateAsset, deleteAsset, deleteAssets } = useAppStore();
+  const {
+    assets,
+    locations,
+    boxTypes,
+    createAssets,
+    updateAsset,
+    deleteAsset,
+    deleteAssets,
+    fetchBoxTypes,
+    upsertBoxType,
+    renameBoxType,
+    deleteBoxType,
+  } = useAppStore();
   const homeLocationId = orderedBoxYardLocations(locations)[0]?.id || "";
   const boxes = useMemo(
     () => assets.filter((asset) => asset.is_active !== false && isBoxAsset(asset)),
     [assets]
   );
 
-  const [boxTypes, setBoxTypes] = useState<SelectOption[]>(defaultBoxTypes);
-
   useEffect(() => {
-    const extra = [...new Set(boxes.map((box) => box.type))]
-      .filter((type) => !defaultBoxTypes.some((option) => option.value === type))
-      .map((type) => ({ value: type, label: type.replace(/_/g, " ") }));
-    if (extra.length === 0) return;
-    setBoxTypes((current) => {
-      const missing = extra.filter((item) => !current.some((option) => option.value === item.value));
-      return missing.length ? [...current, ...missing] : current;
-    });
-  }, [boxes]);
+    void fetchBoxTypes();
+  }, [fetchBoxTypes]);
+
+  const typeOptions: SelectOption[] = useMemo(
+    () => boxTypes.map((row) => ({ value: row.value, label: row.label })),
+    [boxTypes]
+  );
 
   const typeLabel = (type: string) =>
     boxTypes.find((option) => option.value === type)?.label || type.replace(/_/g, " ");
@@ -456,8 +458,18 @@ export function EmbalagensPanel() {
           <BoxFormFields
             form={form}
             setForm={setForm}
-            boxTypes={boxTypes}
-            setBoxTypes={setBoxTypes}
+            typeOptions={typeOptions}
+            onCreateType={async (label) => {
+              const value = slugType(label);
+              await upsertBoxType(value, label);
+              return value;
+            }}
+            onRenameType={async (value, label) => {
+              await renameBoxType(value, label);
+            }}
+            onDeleteType={async (value) => {
+              await deleteBoxType(value);
+            }}
             locations={locations}
             showQuantity
           />
@@ -679,8 +691,18 @@ export function EmbalagensPanel() {
           <BoxFormFields
             form={form}
             setForm={setForm}
-            boxTypes={boxTypes}
-            setBoxTypes={setBoxTypes}
+            typeOptions={typeOptions}
+            onCreateType={async (label) => {
+              const value = slugType(label);
+              await upsertBoxType(value, label);
+              return value;
+            }}
+            onRenameType={async (value, label) => {
+              await renameBoxType(value, label);
+            }}
+            onDeleteType={async (value) => {
+              await deleteBoxType(value);
+            }}
             locations={locations}
             showQuantity={false}
           />
@@ -806,15 +828,19 @@ export function EmbalagensPanel() {
 function BoxFormFields({
   form,
   setForm,
-  boxTypes,
-  setBoxTypes,
+  typeOptions,
+  onCreateType,
+  onRenameType,
+  onDeleteType,
   locations,
   showQuantity,
 }: {
   form: BoxForm;
   setForm: (next: BoxForm) => void;
-  boxTypes: SelectOption[];
-  setBoxTypes: (next: SelectOption[]) => void;
+  typeOptions: SelectOption[];
+  onCreateType: (label: string) => Promise<string>;
+  onRenameType: (value: string, label: string) => Promise<void>;
+  onDeleteType: (value: string) => Promise<void>;
   locations: Location[];
   showQuantity: boolean;
 }) {
@@ -841,19 +867,26 @@ function BoxFormFields({
           <CreatableSelect
             value={form.type}
             onChange={(value) => setForm({ ...form, type: value })}
-            options={boxTypes}
-            onCreateOption={(label) => {
-              const value = slugType(label);
-              if (!boxTypes.some((option) => option.value === value)) {
-                setBoxTypes([...boxTypes, { value, label }]);
+            options={typeOptions}
+            onCreateOption={async (label) => {
+              try {
+                const value = await onCreateType(label);
+                setForm({ ...form, type: value });
+                return value;
+              } catch (error) {
+                alert(error instanceof Error ? error.message : "Não foi possível criar o tipo.");
+                return form.type;
               }
-              setForm({ ...form, type: value });
             }}
             onEditOption={(value, newLabel) => {
-              setBoxTypes(boxTypes.map((option) => (option.value === value ? { ...option, label: newLabel } : option)));
+              void onRenameType(value, newLabel).catch((error) => {
+                alert(error instanceof Error ? error.message : "Não foi possível renomear o tipo.");
+              });
             }}
             onDeleteOption={(value) => {
-              setBoxTypes(boxTypes.filter((option) => option.value !== value));
+              void onDeleteType(value).catch((error) => {
+                alert(error instanceof Error ? error.message : "Não foi possível excluir o tipo.");
+              });
             }}
             placeholder="Selecione o tipo..."
             createPlaceholder="Novo tipo..."

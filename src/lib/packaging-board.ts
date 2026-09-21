@@ -10,7 +10,9 @@ export const BOX_TYPE_LABEL: Record<BoxType, string> = {
   caixa_grande: "Caixa grande",
 };
 
-export function boxTypeLabel(type: string) {
+export function boxTypeLabel(type: string, catalog?: { value: string; label: string }[]) {
+  const named = catalog?.find((row) => row.value === type)?.label?.trim();
+  if (named) return named;
   if (type === "caixa_preta" || type === "caixa_media" || type === "caixa_grande") {
     return BOX_TYPE_LABEL[type];
   }

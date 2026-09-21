@@ -139,6 +139,14 @@ export interface ProductComponent {
   updated_at: string;
 }
 
+export interface BoxTypeCatalog {
+  value: string;
+  label: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Asset {
   id: string;
   code: string;

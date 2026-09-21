@@ -67,7 +67,7 @@ import type {
   Order, OrderItem, SeparationJob, EquipmentReservation,
   OrderType, FulfillmentMethod, SeparationStage, StockGrade,
   PhysicalState, StockStatus, AssetComponent, AssetAttachment,
-  Uniform, UniformCheckout, UniformSize, UniformStock, Vehicle
+  Uniform, UniformCheckout, UniformSize, UniformStock, Vehicle, BoxTypeCatalog
 } from '@/types/database';
 
 interface AppState {
@@ -96,6 +96,7 @@ interface AppState {
   uniformStock: UniformStock[];
   vehicles: Vehicle[];
   kanbanColumnOrders: Record<string, string[]>;
+  boxTypes: BoxTypeCatalog[];
   
   fetchAll: () => Promise<void>;
   fetchLocations: () => Promise<void>;
@@ -111,6 +112,10 @@ interface AppState {
   ensureAssetPlaces: () => Promise<void>;
   ensureSeparationJobs: () => Promise<void>;
   fetchAssets: () => Promise<void>;
+  fetchBoxTypes: () => Promise<void>;
+  upsertBoxType: (value: string, label: string) => Promise<BoxTypeCatalog>;
+  renameBoxType: (value: string, label: string) => Promise<void>;
+  deleteBoxType: (value: string) => Promise<void>;
   fetchReceipts: () => Promise<void>;
   fetchStock: () => Promise<void>;
   fetchMaterialStock: () => Promise<void>;
@@ -625,6 +630,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   uniformStock: [],
   vehicles: [],
   kanbanColumnOrders: {},
+  boxTypes: [
+    { value: 'caixa_media', label: 'Caixa Média', sort_order: 1, created_at: '', updated_at: '' },
+    { value: 'caixa_preta', label: 'Caixa Preta', sort_order: 2, created_at: '', updated_at: '' },
+    { value: 'caixa_grande', label: 'Caixa Grande', sort_order: 3, created_at: '', updated_at: '' },
+  ],
   
   clearError: () => set({ error: null }),
   
@@ -646,6 +656,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       state.fetchUniforms(),
       state.fetchVehicles(),
       state.fetchKanbanColumnOrders(),
+      state.fetchBoxTypes(),
     ]);
     void get().seedUniformStockIfNeeded();
     const next = get();
@@ -735,6 +746,108 @@ export const useAppStore = create<AppState>((set, get) => ({
     } else {
       set({ assets: data || defaultAssets, isLoading: false });
     }
+  },
+
+  fetchBoxTypes: async () => {
+    const defaults: BoxTypeCatalog[] = get().boxTypes.length
+      ? get().boxTypes.filter((row) =>
+          ['caixa_media', 'caixa_preta', 'caixa_grande'].includes(row.value)
+        )
+      : [];
+    const fallback: BoxTypeCatalog[] = [
+      { value: 'caixa_media', label: 'Caixa Média', sort_order: 1, created_at: '', updated_at: '' },
+      { value: 'caixa_preta', label: 'Caixa Preta', sort_order: 2, created_at: '', updated_at: '' },
+      { value: 'caixa_grande', label: 'Caixa Grande', sort_order: 3, created_at: '', updated_at: '' },
+    ];
+    const merge = (rows: BoxTypeCatalog[]) => {
+      const map = new Map<string, BoxTypeCatalog>();
+      for (const row of fallback) map.set(row.value, row);
+      for (const row of rows) map.set(row.value, row);
+      for (const asset of get().assets.filter((item) => isBoxAsset(item))) {
+        if (map.has(asset.type)) continue;
+        map.set(asset.type, {
+          value: asset.type,
+          label: asset.name || asset.type.replace(/_/g, ' '),
+          sort_order: 50,
+          created_at: asset.created_at,
+          updated_at: asset.updated_at,
+        });
+      }
+      return [...map.values()].sort((a, b) => a.sort_order - b.sort_order || a.label.localeCompare(b.label, 'pt-BR'));
+    };
+
+    if (!isSupabaseConfigured || !supabase) {
+      set({ boxTypes: merge(defaults) });
+      return;
+    }
+    const { data, error } = await supabase.from('box_types').select('*').order('sort_order');
+    if (error && /schema cache|does not exist|Could not find the table/i.test(error.message)) {
+      set({ boxTypes: merge([]) });
+      return;
+    }
+    if (error) throw new Error(error.message);
+    const merged = merge((data || []) as BoxTypeCatalog[]);
+    const missing = merged.filter((row) => !(data || []).some((item) => item.value === row.value));
+    if (missing.length) {
+      await supabase.from('box_types').upsert(
+        missing.map((row) => ({
+          value: row.value,
+          label: row.label,
+          sort_order: row.sort_order,
+        })),
+        { onConflict: 'value' }
+      );
+    }
+    set({ boxTypes: merged });
+  },
+
+  upsertBoxType: async (value, label) => {
+    const now = new Date().toISOString();
+    const existing = get().boxTypes.find((row) => row.value === value);
+    const row: BoxTypeCatalog = {
+      value,
+      label: label.trim() || value,
+      sort_order: existing?.sort_order ?? 20,
+      created_at: existing?.created_at || now,
+      updated_at: now,
+    };
+    if (isSupabaseConfigured && supabase) {
+      const { error } = await supabase.from('box_types').upsert(
+        { value: row.value, label: row.label, sort_order: row.sort_order, updated_at: now },
+        { onConflict: 'value' }
+      );
+      if (error && !/schema cache|does not exist|Could not find the table/i.test(error.message)) {
+        throw new Error(error.message);
+      }
+    }
+    set((state) => ({
+      boxTypes: state.boxTypes.some((item) => item.value === value)
+        ? state.boxTypes.map((item) => (item.value === value ? row : item))
+        : [...state.boxTypes, row],
+    }));
+    return row;
+  },
+
+  renameBoxType: async (value, label) => {
+    const nextLabel = label.trim();
+    if (!nextLabel) throw new Error('Informe o nome do tipo.');
+    await get().upsertBoxType(value, nextLabel);
+    const targets = get().assets.filter((asset) => isBoxAsset(asset) && asset.type === value);
+    for (const asset of targets) {
+      await get().updateAsset(asset.id, { name: nextLabel });
+    }
+  },
+
+  deleteBoxType: async (value) => {
+    const inUse = get().assets.some((asset) => isBoxAsset(asset) && asset.is_active !== false && asset.type === value);
+    if (inUse) throw new Error('Este tipo ainda tem unidades. Exclua ou mova as caixas antes.');
+    if (isSupabaseConfigured && supabase) {
+      const { error } = await supabase.from('box_types').delete().eq('value', value);
+      if (error && !/schema cache|does not exist|Could not find the table/i.test(error.message)) {
+        throw new Error(error.message);
+      }
+    }
+    set((state) => ({ boxTypes: state.boxTypes.filter((row) => row.value !== value) }));
   },
 
   createLocation: async (data) => {
