@@ -170,6 +170,7 @@ export function EmbalagensPanel() {
     upsertBoxType,
     renameBoxType,
     setBoxTypePhoto,
+    updateBoxTypeShared,
     deleteBoxType,
   } = useAppStore();
   const homeLocationId = orderedBoxYardLocations(locations)[0]?.id || "";
@@ -189,10 +190,33 @@ export function EmbalagensPanel() {
 
   const typeLabel = (type: string) =>
     boxTypes.find((option) => option.value === type)?.label || type.replace(/_/g, " ");
-  const typePhoto = (type: string) =>
-    boxTypes.find((option) => option.value === type)?.photo_url ||
-    boxes.find((box) => box.type === type)?.photo_url ||
-    "";
+  const typeSpecs = (type: string) => {
+    const catalog = boxTypes.find((option) => option.value === type);
+    const sample = boxes.find((box) => box.type === type);
+    return {
+      description: catalog?.description || sample?.description || "",
+      unit_capacity: catalog?.unit_capacity ?? sample?.unit_capacity ?? null,
+      length_cm: catalog?.length_cm ?? sample?.length_cm ?? null,
+      width_cm: catalog?.width_cm ?? sample?.width_cm ?? null,
+      height_cm: catalog?.height_cm ?? sample?.height_cm ?? null,
+      photo_url: catalog?.photo_url || sample?.photo_url || "",
+    };
+  };
+  const applyTypeSpecs = (type: string, extra: Partial<BoxForm> = {}): BoxForm => {
+    const specs = typeSpecs(type);
+    return {
+      ...emptyForm,
+      location_id: homeLocationId,
+      type,
+      description: specs.description,
+      unit_capacity: specs.unit_capacity ? String(specs.unit_capacity) : "",
+      length_cm: specs.length_cm != null ? String(specs.length_cm) : "",
+      width_cm: specs.width_cm != null ? String(specs.width_cm) : "",
+      height_cm: specs.height_cm != null ? String(specs.height_cm) : "",
+      photo_url: specs.photo_url,
+      ...extra,
+    };
+  };
 
   const typeRows = useMemo<BoxTypeRow[]>(() => {
     const groups = new Map<string, Asset[]>();
@@ -205,16 +229,17 @@ export function EmbalagensPanel() {
       .map(([type, units]) => {
         const sorted = [...units].sort((a, b) => a.code.localeCompare(b.code, "pt-BR", { numeric: true }));
         const sample = sorted[0];
+        const specs = typeSpecs(type);
         const label = typeLabel(type);
         return {
           id: type,
           type,
           label,
           quantity: sorted.length,
-          description: sample.description || "",
-          unit_capacity: sample.unit_capacity ?? null,
-          measures: formatBoxOuterMeasures(sample) || "—",
-          photo_url: typePhoto(type) || sample.photo_url || "",
+          description: specs.description || sample.description || "",
+          unit_capacity: specs.unit_capacity ?? sample.unit_capacity ?? null,
+          measures: formatBoxOuterMeasures(specs) || formatBoxOuterMeasures(sample) || "—",
+          photo_url: specs.photo_url || sample.photo_url || "",
           search: `${label} ${type} ${sorted.map((unit) => unit.code).join(" ")}`.toLowerCase(),
         };
       })
@@ -244,20 +269,14 @@ export function EmbalagensPanel() {
     const ofType = boxes.filter((box) => box.type === seedType);
     const sample = ofType[0];
     const start = nextSequentialCode(sample?.code || "CXG-001", boxes.map((box) => box.code));
-    setForm({
-      ...emptyForm,
-      type: seedType,
-      quantity: "1",
-      code: start,
-      description: sample?.description || "",
-      unit_capacity: sample?.unit_capacity ? String(sample.unit_capacity) : "",
-      length_cm: sample?.length_cm != null ? String(sample.length_cm) : "",
-      width_cm: sample?.width_cm != null ? String(sample.width_cm) : "",
-      height_cm: sample?.height_cm != null ? String(sample.height_cm) : "",
-      photo_url: typePhoto(seedType) || sample?.photo_url || "",
-      location_id: sample?.location_id || homeLocationId,
-      autoGenerate: true,
-    });
+    setForm(
+      applyTypeSpecs(seedType, {
+        quantity: "1",
+        code: start,
+        location_id: sample?.location_id || homeLocationId,
+        autoGenerate: true,
+      })
+    );
     setCreateOpen(true);
   };
 
@@ -334,7 +353,16 @@ export function EmbalagensPanel() {
     setCreateBusy(true);
     try {
       await createAssets(codes.map((code) => ({ ...shared, code })));
-      if (form.type) await setBoxTypePhoto(form.type, form.photo_url || null);
+      if (form.type) {
+        await updateBoxTypeShared(form.type, {
+          description: shared.description,
+          unit_capacity: shared.unit_capacity,
+          length_cm: shared.length_cm,
+          width_cm: shared.width_cm,
+          height_cm: shared.height_cm,
+          photo_url: shared.photo_url,
+        });
+      }
       setCreateOpen(false);
       setForm({ ...emptyForm, location_id: homeLocationId });
     } catch (error) {
@@ -359,7 +387,16 @@ export function EmbalagensPanel() {
     }
     try {
       await updateAsset(unitEdit.id, { ...shared, code });
-      if (form.type) await setBoxTypePhoto(form.type, form.photo_url || null);
+      if (form.type) {
+        await updateBoxTypeShared(form.type, {
+          description: shared.description,
+          unit_capacity: shared.unit_capacity,
+          length_cm: shared.length_cm,
+          width_cm: shared.width_cm,
+          height_cm: shared.height_cm,
+          photo_url: shared.photo_url,
+        });
+      }
       setUnitEdit(null);
     } catch (error) {
       alert(error instanceof Error ? error.message : "Não foi possível salvar.");
@@ -466,7 +503,7 @@ export function EmbalagensPanel() {
             form={form}
             setForm={setForm}
             typeOptions={typeOptions}
-            typePhoto={typePhoto}
+            applyTypeSpecs={applyTypeSpecs}
             onCreateType={async (label) => {
               const value = slugType(label);
               await upsertBoxType(value, label);
@@ -603,19 +640,14 @@ export function EmbalagensPanel() {
                     title="Editar"
                     onClick={() => {
                       setUnitEdit(item);
-                      setForm({
-                        type: item.type,
-                        quantity: "1",
-                        code: item.code,
-                        description: item.description || "",
-                        unit_capacity: item.unit_capacity ? String(item.unit_capacity) : "",
-                        length_cm: item.length_cm != null ? String(item.length_cm) : "",
-                        width_cm: item.width_cm != null ? String(item.width_cm) : "",
-                        height_cm: item.height_cm != null ? String(item.height_cm) : "",
-                        photo_url: item.photo_url || "",
-                        location_id: item.location_id || homeLocationId,
-                        autoGenerate: false,
-                      });
+                      setForm(
+                        applyTypeSpecs(item.type, {
+                          quantity: "1",
+                          code: item.code,
+                          location_id: item.location_id || homeLocationId,
+                          autoGenerate: false,
+                        })
+                      );
                     }}
                   >
                     <Pencil className="h-3.5 w-3.5" />
@@ -703,7 +735,7 @@ export function EmbalagensPanel() {
             form={form}
             setForm={setForm}
             typeOptions={typeOptions}
-            typePhoto={typePhoto}
+            applyTypeSpecs={applyTypeSpecs}
             onCreateType={async (label) => {
               const value = slugType(label);
               await upsertBoxType(value, label);
@@ -844,7 +876,7 @@ function BoxFormFields({
   form,
   setForm,
   typeOptions,
-  typePhoto,
+  applyTypeSpecs,
   onCreateType,
   onRenameType,
   onDeleteType,
@@ -855,7 +887,7 @@ function BoxFormFields({
   form: BoxForm;
   setForm: (next: BoxForm) => void;
   typeOptions: SelectOption[];
-  typePhoto: (type: string) => string;
+  applyTypeSpecs: (type: string, extra?: Partial<BoxForm>) => BoxForm;
   onCreateType: (label: string) => Promise<string>;
   onRenameType: (value: string, label: string) => Promise<void>;
   onDeleteType: (value: string) => Promise<void>;
@@ -883,7 +915,7 @@ function BoxFormFields({
           }}
         />
         <p className="pt-2 text-xs text-muted-foreground">
-          Uma foto por tipo: vale para todas as unidades deste cadastro.
+          Foto, descrição, capacidade e medidas são do tipo: valem para todas as unidades.
         </p>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -891,7 +923,7 @@ function BoxFormFields({
           <Label className="text-sm">Tipo</Label>
           <CreatableSelect
             value={form.type}
-            onChange={(value) => setForm({ ...form, type: value, photo_url: typePhoto(value) })}
+            onChange={(value) => setForm(applyTypeSpecs(value, { quantity: form.quantity, code: form.code, location_id: form.location_id, autoGenerate: form.autoGenerate }))}
             options={typeOptions}
             onCreateOption={async (label) => {
               try {

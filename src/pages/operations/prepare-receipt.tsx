@@ -1,14 +1,16 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertCircle, CheckCircle2, Plus, QrCode, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Plus, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CameraQrButton } from "@/components/camera-qr-button";
 import { allocateToBoxes } from "@/lib/box-fill";
-import { getBoxUnitCapacity } from "@/lib/operational-assets";
+import { getBoxUnitCapacity, isBoxAsset } from "@/lib/operational-assets";
+import { boxTypeLabel } from "@/lib/packaging-board";
 import {
   countedForItem,
   countedQuantity,
@@ -71,20 +73,23 @@ function defaultLocation(locations: Location[], grade: GradeKey) {
     || "";
 }
 
-function emptyMediaBoxes(assets: Asset[], stock: Stock[], usedIds: string[]) {
+function emptyBoxesOfType(assets: Asset[], stock: Stock[], usedIds: string[], type: string) {
   return assets.filter(
     (a) =>
-      a.type === "caixa_media" &&
+      isBoxAsset(a) &&
+      a.type === type &&
       a.status === "available" &&
-      a.is_active &&
+      a.is_active !== false &&
       !usedIds.includes(a.id) &&
       !stock.some((s) => s.asset_id === a.id && s.quantity > 0)
   );
 }
 
-function typicalMediaCapacity(assets: Asset[]) {
-  const media = assets.find((a) => a.type === "caixa_media");
-  return media ? getBoxUnitCapacity(media) : 100;
+function typicalBoxCapacity(assets: Asset[], type?: string) {
+  const sample = type
+    ? assets.find((a) => isBoxAsset(a) && a.type === type)
+    : assets.find((a) => isBoxAsset(a));
+  return sample ? getBoxUnitCapacity(sample) : 100;
 }
 
 function normalizeBoxCode(code: string) {
@@ -642,12 +647,12 @@ function PrepareBatchDialog({
                       />
                       {mode === "boxed" && (
                         <p className="text-xs text-muted-foreground">
-                          {describeBoxPlan(qty(card.key), typicalMediaCapacity(assets))}
+                          {describeBoxPlan(qty(card.key), typicalBoxCapacity(assets))}
                         </p>
                       )}
                       {mode === "loose" && qty(card.key) > 0 && (
                         <p className="text-xs text-muted-foreground">
-                          Estoque solto neste local — sem caixa média.
+                          Estoque solto neste local — sem caixa.
                         </p>
                       )}
                     </div>
@@ -768,7 +773,7 @@ function PrepareBatchDialog({
                 <CardTitle className="text-base">Liberar material</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground">Sem classificação AAA/B/C e sem caixas médias.</p>
+                <p className="text-sm text-muted-foreground">Sem classificação AAA/B/C e sem caixas.</p>
                 <div className="space-y-1">
                   <Label>Quantidade desta leva</Label>
                   <Input type="number" min="0" value={materialQty} onChange={(e) => setMaterialQty(e.target.value)} />
@@ -822,6 +827,22 @@ function GradeBoxPicker({
   stock: Stock[];
   onChange: (ids: string[]) => void;
 }) {
+  const { boxTypes, fetchBoxTypes } = useAppStore();
+  useEffect(() => {
+    void fetchBoxTypes();
+  }, [fetchBoxTypes]);
+  const typeOptions = boxTypes.length
+    ? boxTypes
+    : [...new Set(assets.filter((asset) => isBoxAsset(asset)).map((asset) => asset.type))].map((value) => ({
+        value,
+        label: boxTypeLabel(value),
+        sort_order: 50,
+        created_at: "",
+        updated_at: "",
+      }));
+  const defaultType =
+    typeOptions.find((row) => row.value === "caixa_media")?.value || typeOptions[0]?.value || "caixa_media";
+  const [boxType, setBoxType] = useState(defaultType);
   const [scannerInput, setScannerInput] = useState("");
   const [scannerFocused, setScannerFocused] = useState(false);
   const [scanMessage, setScanMessage] = useState("");
@@ -830,11 +851,13 @@ function GradeBoxPicker({
     .map((id) => assets.find((a) => a.id === id))
     .filter((a): a is Asset => Boolean(a));
   const allocated = allocateToBoxes(quantity, selected);
-  const available = emptyMediaBoxes(assets, stock, usedIds);
+  const available = emptyBoxesOfType(assets, stock, usedIds, boxType);
 
   const addBox = (asset: Asset) => {
     if (selectedIds.includes(asset.id)) return false;
-    if (!available.some((item) => item.id === asset.id)) return false;
+    const empty = emptyBoxesOfType(assets, stock, usedIds, asset.type);
+    if (!empty.some((item) => item.id === asset.id)) return false;
+    setBoxType(asset.type);
     onChange([...selectedIds, asset.id]);
     setScanMessage("");
     return true;
@@ -852,9 +875,12 @@ function GradeBoxPicker({
       setScanMessage(`${code} não cadastrada.`);
       return;
     }
-    if (asset.type !== "caixa_media") {
-      setScanMessage(`${code} não é caixa média.`);
+    if (!isBoxAsset(asset)) {
+      setScanMessage(`${code} não é uma embalagem vai-vem.`);
       return;
+    }
+    if (asset.type !== boxType) {
+      setBoxType(asset.type);
     }
     if (!addBox(asset)) {
       setScanMessage(`${code} não está disponível.`);
@@ -863,34 +889,53 @@ function GradeBoxPicker({
 
   return (
     <div className="space-y-2">
-      <Label>Caixas médias</Label>
+      <div className="space-y-1">
+        <Label>Tipo de caixa</Label>
+        <select
+          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          value={boxType}
+          onChange={(e) => {
+            setBoxType(e.target.value);
+            setScanMessage("");
+          }}
+        >
+          {typeOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
       <div className="flex gap-2">
-        <div className="relative flex-1">
-          <QrCode className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            ref={scannerRef}
-            value={scannerInput}
-            onChange={(e) => {
-              const value = e.target.value;
-              setScannerInput(value);
-              if (value.includes("\n") || value.includes("\r")) {
-                addByCode(value);
-                setScannerInput("");
-              }
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addByCode(scannerInput);
-                setScannerInput("");
-              }
-            }}
-            onFocus={() => setScannerFocused(true)}
-            onBlur={() => setScannerFocused(false)}
-            placeholder="Escaneie ou digite o código..."
-            className={`h-10 pl-8 font-mono text-sm ${scannerFocused ? "ring-2 ring-primary" : ""}`}
-          />
-        </div>
+        <Input
+          ref={scannerRef}
+          value={scannerInput}
+          onChange={(e) => {
+            const value = e.target.value;
+            setScannerInput(value);
+            if (value.includes("\n") || value.includes("\r")) {
+              addByCode(value);
+              setScannerInput("");
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addByCode(scannerInput);
+              setScannerInput("");
+            }
+          }}
+          onFocus={() => setScannerFocused(true)}
+          onBlur={() => setScannerFocused(false)}
+          placeholder="Escaneie ou digite o código..."
+          className={`h-10 flex-1 font-mono text-sm ${scannerFocused ? "ring-2 ring-primary" : ""}`}
+        />
+        <CameraQrButton
+          onResult={(value) => {
+            addByCode(value);
+            setScannerInput("");
+          }}
+        />
         <Button
           type="button"
           variant="outline"
@@ -958,7 +1003,9 @@ function GradeBoxPicker({
           }}
         >
           <option value="">
-            {available.length > 0 ? "Escolher caixa vazia…" : "Nenhuma caixa disponível"}
+            {available.length > 0
+              ? `Escolher ${boxTypeLabel(boxType, typeOptions)} vazia…`
+              : `Nenhuma ${boxTypeLabel(boxType, typeOptions)} disponível`}
           </option>
           {available.map((asset) => (
             <option key={asset.id} value={asset.id}>

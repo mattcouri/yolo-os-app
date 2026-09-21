@@ -143,10 +143,19 @@ export interface BoxTypeCatalog {
   value: string;
   label: string;
   photo_url?: string | null;
+  description?: string | null;
+  unit_capacity?: number | null;
+  length_cm?: number | null;
+  width_cm?: number | null;
+  height_cm?: number | null;
   sort_order: number;
   created_at: string;
   updated_at: string;
 }
+
+export type BoxTypeSharedPatch = Partial<
+  Pick<BoxTypeCatalog, 'description' | 'unit_capacity' | 'length_cm' | 'width_cm' | 'height_cm' | 'photo_url'>
+>;
 
 export interface Asset {
   id: string;

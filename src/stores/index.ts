@@ -16,6 +16,7 @@ import {
   cleanLocation,
   defaultYardLocation,
   factoryLocation,
+  formatBoxOuterMeasures,
   getBoxUnitCapacity,
   isBoxAsset,
   needsYardLocation,
@@ -67,7 +68,7 @@ import type {
   Order, OrderItem, SeparationJob, EquipmentReservation,
   OrderType, FulfillmentMethod, SeparationStage, StockGrade,
   PhysicalState, StockStatus, AssetComponent, AssetAttachment,
-  Uniform, UniformCheckout, UniformSize, UniformStock, Vehicle, BoxTypeCatalog
+  Uniform, UniformCheckout, UniformSize, UniformStock, Vehicle, BoxTypeCatalog, BoxTypeSharedPatch
 } from '@/types/database';
 
 interface AppState {
@@ -116,6 +117,7 @@ interface AppState {
   upsertBoxType: (value: string, label: string) => Promise<BoxTypeCatalog>;
   renameBoxType: (value: string, label: string) => Promise<void>;
   setBoxTypePhoto: (value: string, photoUrl: string | null) => Promise<void>;
+  updateBoxTypeShared: (value: string, patch: BoxTypeSharedPatch) => Promise<void>;
   deleteBoxType: (value: string) => Promise<void>;
   fetchReceipts: () => Promise<void>;
   fetchStock: () => Promise<void>;
@@ -809,6 +811,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       value,
       label: label.trim() || value,
       photo_url: existing?.photo_url ?? null,
+      description: existing?.description ?? null,
+      unit_capacity: existing?.unit_capacity ?? null,
+      length_cm: existing?.length_cm ?? null,
+      width_cm: existing?.width_cm ?? null,
+      height_cm: existing?.height_cm ?? null,
       sort_order: existing?.sort_order ?? 20,
       created_at: existing?.created_at || now,
       updated_at: now,
@@ -841,15 +848,48 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setBoxTypePhoto: async (value, photoUrl) => {
+    await get().updateBoxTypeShared(value, { photo_url: photoUrl });
+  },
+
+  updateBoxTypeShared: async (value, patch) => {
     const now = new Date().toISOString();
+    const existing = get().boxTypes.find((row) => row.value === value);
+    const next: BoxTypeCatalog = {
+      value,
+      label: existing?.label || value.replace(/_/g, ' '),
+      photo_url: patch.photo_url !== undefined ? patch.photo_url : existing?.photo_url ?? null,
+      description: patch.description !== undefined ? patch.description : existing?.description ?? null,
+      unit_capacity: patch.unit_capacity !== undefined ? patch.unit_capacity : existing?.unit_capacity ?? null,
+      length_cm: patch.length_cm !== undefined ? patch.length_cm : existing?.length_cm ?? null,
+      width_cm: patch.width_cm !== undefined ? patch.width_cm : existing?.width_cm ?? null,
+      height_cm: patch.height_cm !== undefined ? patch.height_cm : existing?.height_cm ?? null,
+      sort_order: existing?.sort_order ?? 20,
+      created_at: existing?.created_at || now,
+      updated_at: now,
+    };
+    const dimensions = formatBoxOuterMeasures(next) || null;
+    const assetPatch = {
+      description: next.description ?? null,
+      unit_capacity: next.unit_capacity ?? null,
+      length_cm: next.length_cm ?? null,
+      width_cm: next.width_cm ?? null,
+      height_cm: next.height_cm ?? null,
+      dimensions,
+      photo_url: next.photo_url ?? null,
+      updated_at: now,
+    };
     if (isSupabaseConfigured && supabase) {
-      const existing = get().boxTypes.find((row) => row.value === value);
       const { error } = await supabase.from('box_types').upsert(
         {
-          value,
-          label: existing?.label || value.replace(/_/g, ' '),
-          photo_url: photoUrl,
-          sort_order: existing?.sort_order ?? 20,
+          value: next.value,
+          label: next.label,
+          photo_url: next.photo_url,
+          description: next.description,
+          unit_capacity: next.unit_capacity,
+          length_cm: next.length_cm,
+          width_cm: next.width_cm,
+          height_cm: next.height_cm,
+          sort_order: next.sort_order,
           updated_at: now,
         },
         { onConflict: 'value' }
@@ -857,18 +897,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (error && !/schema cache|does not exist|Could not find the table/i.test(error.message)) {
         throw new Error(error.message);
       }
-      const { error: assetError } = await supabase
-        .from('assets')
-        .update({ photo_url: photoUrl, updated_at: now })
-        .eq('type', value);
+      const { error: assetError } = await supabase.from('assets').update(assetPatch).eq('type', value);
       if (assetError) throw new Error(assetError.message);
     }
     set((state) => ({
-      boxTypes: state.boxTypes.map((row) =>
-        row.value === value ? { ...row, photo_url: photoUrl, updated_at: now } : row
-      ),
+      boxTypes: state.boxTypes.some((row) => row.value === value)
+        ? state.boxTypes.map((row) => (row.value === value ? next : row))
+        : [...state.boxTypes, next],
       assets: state.assets.map((asset) =>
-        isBoxAsset(asset) && asset.type === value ? { ...asset, photo_url: photoUrl, updated_at: now } : asset
+        isBoxAsset(asset) && asset.type === value ? { ...asset, ...assetPatch } : asset
       ),
     }));
   },
@@ -2431,11 +2468,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           throw new Error(`As caixas da classe ${label} devem somar ${grade.quantity} un.`);
         }
         for (const box of grade.boxes) {
-          if (usedBoxIds.has(box.asset_id)) throw new Error('A mesma caixa média não pode ser usada duas vezes.');
+          if (usedBoxIds.has(box.asset_id)) throw new Error('A mesma caixa não pode ser usada duas vezes.');
           usedBoxIds.add(box.asset_id);
           const asset = nextAssets.find((a) => a.id === box.asset_id);
-          if (!asset) throw new Error('Caixa média não encontrada.');
-          if (asset.type !== 'caixa_media') throw new Error(`${asset.code} não é caixa média de movimentação interna.`);
+          if (!asset) throw new Error('Caixa não encontrada.');
+          if (!isBoxAsset(asset)) throw new Error(`${asset.code} não é uma embalagem vai-vem cadastrada.`);
           if (asset.status !== 'available') throw new Error(`${asset.code} não está disponível.`);
           const occupied = nextStock.some((s) => s.asset_id === asset.id && s.quantity > 0);
           if (occupied) throw new Error(`${asset.code} já tem produto.`);
