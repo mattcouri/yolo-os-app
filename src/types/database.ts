@@ -514,6 +514,15 @@ export interface UniformCheckout {
   created_at: string;
 }
 
+export interface UniformStock {
+  id: string;
+  uniform_id: string;
+  size: UniformSize;
+  location_id: string;
+  quantity: number;
+  updated_at: string;
+}
+
 export interface Vehicle {
   id: string;
   name: string;
@@ -633,6 +642,11 @@ export interface Database {
         Row: UniformCheckout;
         Insert: Omit<UniformCheckout, 'id' | 'created_at'>;
         Update: Partial<Omit<UniformCheckout, 'id' | 'created_at'>>;
+      };
+      uniform_stock: {
+        Row: UniformStock;
+        Insert: Omit<UniformStock, 'id' | 'updated_at'> & { id?: string; updated_at?: string };
+        Update: Partial<Omit<UniformStock, 'id'>>;
       };
       vehicles: {
         Row: Vehicle;

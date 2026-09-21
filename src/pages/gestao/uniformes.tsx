@@ -1,24 +1,22 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Shirt } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/ui/data-table";
-import { orderedAssetYardLocations } from "@/lib/locations";
-import { cleanLocation } from "@/lib/operational-assets";
-import { UNIFORM_SIZES, availableForSize } from "@/lib/uniforms";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { isSalaTradeLocation, orderedUniformYardLocations } from "@/lib/locations";
+import { UNIFORM_SIZES, UNIFORM_STREET_COLUMN, availableForSize, stockQtyAt } from "@/lib/uniforms";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores";
-import type { Location, Order, Uniform, UniformCheckout, UniformSize } from "@/types/database";
+import type { Location, Order, Uniform, UniformCheckout, UniformSize, UniformStock } from "@/types/database";
 
 const selectClass =
   "h-8 w-full max-w-[14rem] rounded-md border border-input bg-background px-2 text-xs";
 
-const STREET_COLUMN = "__street__";
-
 type FilterId = "all" | "ready" | "out";
-type PlaceId = "home" | "street";
+type PlaceId = "yard" | "street";
 
 function formatWhen(iso?: string | null) {
   if (!iso) return "—";
@@ -27,11 +25,14 @@ function formatWhen(iso?: string | null) {
   return date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 }
 
-function statusChipClass(place: PlaceId) {
-  if (place === "home") {
-    return "border-emerald-400/45 bg-emerald-500/15 text-emerald-900 dark:text-emerald-200";
+function statusChipClass(place: PlaceId, dirty: boolean) {
+  if (place === "street") {
+    return "border-sky-400/45 bg-sky-500/15 text-sky-900 dark:text-sky-200";
   }
-  return "border-sky-400/45 bg-sky-500/15 text-sky-900 dark:text-sky-200";
+  if (dirty) {
+    return "border-amber-400/45 bg-amber-500/15 text-amber-900 dark:text-amber-200";
+  }
+  return "border-emerald-400/45 bg-emerald-500/15 text-emerald-900 dark:text-emerald-200";
 }
 
 function isOpenStreetOrder(order?: Order) {
@@ -41,6 +42,8 @@ function isOpenStreetOrder(order?: Order) {
 
 type PatioRow = {
   id: string;
+  uniformId: string;
+  uniformName: string;
   code: string;
   name: string;
   size: UniformSize;
@@ -49,98 +52,177 @@ type PatioRow = {
   locationName: string;
   statusLabel: string;
   place: PlaceId;
+  dirty: boolean;
+  checkoutId: string | null;
   orderLabel: string;
   lastMovedAt: string | null;
   search: string;
 };
 
-function homeColumnId(locations: Location[]) {
-  return cleanLocation(locations)?.id || orderedAssetYardLocations(locations)[0]?.id || "";
+type TypeGroup = {
+  id: string;
+  uniformId: string;
+  uniformName: string;
+  size: UniformSize;
+  columnId: string;
+  quantity: number;
+  photo_url: string | null;
+  place: PlaceId;
+  dirty: boolean;
+  orderLabels: string[];
+  items: PatioRow[];
+};
+
+function groupByTypeSize(cards: PatioRow[]): TypeGroup[] {
+  const groups = new Map<string, PatioRow[]>();
+  for (const row of cards) {
+    const key = `${row.uniformId}::${row.size}`;
+    const list = groups.get(key) || [];
+    list.push(row);
+    groups.set(key, list);
+  }
+  return [...groups.entries()]
+    .map(([, items]) => {
+      const sorted = [...items].sort((a, b) => a.code.localeCompare(b.code, "pt-BR", { numeric: true }));
+      const sample = sorted[0];
+      const orderLabels = [...new Set(sorted.map((item) => item.orderLabel).filter(Boolean))];
+      return {
+        id: `${sample.columnId}::${sample.uniformId}::${sample.size}`,
+        uniformId: sample.uniformId,
+        uniformName: sample.uniformName,
+        size: sample.size,
+        columnId: sample.columnId,
+        quantity: sorted.length,
+        photo_url: sample.photo_url,
+        place: sample.place,
+        dirty: sample.dirty,
+        orderLabels,
+        items: sorted,
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.uniformName.localeCompare(b.uniformName, "pt-BR") ||
+        UNIFORM_SIZES.indexOf(a.size) - UNIFORM_SIZES.indexOf(b.size)
+    );
 }
 
 function boardColumns(yardLocations: Location[]) {
-  return [...yardLocations.map((location) => location.id), STREET_COLUMN];
+  return [...yardLocations.map((location) => location.id), UNIFORM_STREET_COLUMN];
 }
 
 function columnTitle(columnId: string, yardLocations: Location[]) {
-  if (columnId === STREET_COLUMN) return "Na rua";
+  if (columnId === UNIFORM_STREET_COLUMN) return "Na rua";
   return yardLocations.find((location) => location.id === columnId)?.name || "Local";
 }
 
-function UniformCard({ row }: { row: PatioRow }) {
+function UniformCard({ group, onOpen }: { group: TypeGroup; onOpen: () => void }) {
+  const photo = group.photo_url;
   return (
-    <div className="overflow-hidden rounded-xl border bg-card text-left shadow-sm">
+    <button
+      type="button"
+      onClick={onOpen}
+      className="block w-full overflow-hidden rounded-xl border bg-card text-left shadow-sm transition hover:border-primary/40 hover:shadow-md"
+    >
       <div className="relative aspect-[4/3] overflow-hidden bg-muted">
-        {row.photo_url ? (
-          <img src={row.photo_url} alt="" className="h-full w-full object-cover" />
+        {photo ? (
+          <img src={photo} alt="" className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full w-full items-center justify-center">
             <Shirt className="h-8 w-8 text-muted-foreground/70" />
           </div>
         )}
+        <span className="absolute right-1.5 top-1.5 rounded-md border bg-background/90 px-1.5 py-0.5 text-[10px] font-semibold leading-tight">
+          {group.quantity} un
+        </span>
         <span
           className={cn(
-            "absolute right-1.5 top-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-md border px-1.5 py-0.5 text-[10px] font-semibold leading-tight",
-            statusChipClass(row.place)
+            "absolute left-1.5 top-1.5 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold leading-tight",
+            statusChipClass(group.place, group.dirty)
           )}
         >
-          {row.statusLabel}
+          {group.size}
         </span>
       </div>
       <div className="space-y-0.5 p-2.5">
-        <p className="truncate text-sm font-medium leading-tight">{row.name}</p>
-        <p className="truncate font-mono text-[11px] text-muted-foreground">{row.code}</p>
-        <div className="flex items-center justify-between gap-2 pt-0.5">
-          <Badge variant="outline" className="h-5 max-w-[70%] truncate text-[10px] font-normal">
-            {row.size}
-          </Badge>
-          {row.orderLabel ? (
-            <span className="truncate text-[10px] font-medium text-muted-foreground">{row.orderLabel}</span>
-          ) : null}
-        </div>
+        <p className="truncate text-sm font-medium leading-tight">{group.uniformName}</p>
+        <p className="text-[11px] text-muted-foreground">
+          {group.quantity} {group.quantity === 1 ? "peça" : "peças"} neste local · {group.size}
+        </p>
+        {group.place === "street" && group.orderLabels.length > 0 ? (
+          <p className="truncate text-[10px] font-medium text-muted-foreground">
+            {group.orderLabels.join(", ")}
+          </p>
+        ) : (
+          <p className="text-[10px] text-muted-foreground">
+            {group.place === "street" ? "Na rua" : group.dirty ? "Área suja" : "Sala Trade"}
+          </p>
+        )}
       </div>
-    </div>
+    </button>
   );
+}
+
+function qtyInYard(
+  uniform: Uniform,
+  size: UniformSize,
+  locationId: string,
+  stock: UniformStock[],
+  checkouts: UniformCheckout[],
+  fallbackId: string
+) {
+  const placed = stock.filter((row) => row.uniform_id === uniform.id && row.size === size);
+  const available = availableForSize(uniform, size, checkouts);
+  const placedSum = placed.reduce((sum, row) => sum + row.quantity, 0);
+  if (placedSum === 0 && available > 0 && locationId === fallbackId) return available;
+  return stockQtyAt(stock, uniform.id, size, locationId);
 }
 
 function buildRows(
   uniforms: Uniform[],
   checkouts: UniformCheckout[],
+  stock: UniformStock[],
   orders: Order[],
-  locations: Location[]
+  yards: Location[]
 ): PatioRow[] {
-  const homeId = homeColumnId(locations);
-  const homeName = locations.find((location) => location.id === homeId)?.name || "Área limpa";
+  const fallbackId = yards.find((location) => isSalaTradeLocation(location))?.id || yards[0]?.id || "";
   const rows: PatioRow[] = [];
 
   for (const uniform of uniforms.filter((item) => item.is_active !== false)) {
     for (const size of UNIFORM_SIZES) {
-      const available = availableForSize(uniform, size, checkouts);
-      for (let index = 0; index < available; index += 1) {
-        const code = available > 1 ? `UNI-${size}-${index + 1}` : `UNI-${size}`;
-        const name = `${uniform.name} · ${size}`;
-        rows.push({
-          id: `${uniform.id}:${size}:in:${index}`,
-          code,
-          name,
-          size,
-          photo_url: uniform.photo_url,
-          columnId: homeId,
-          locationName: homeName,
-          statusLabel: "Disponível",
-          place: "home",
-          orderLabel: "",
-          lastMovedAt: uniform.updated_at,
-          search: [code, name, size, homeName, "disponível"].join(" ").toLowerCase(),
-        });
+      for (const yard of yards) {
+        const quantity = qtyInYard(uniform, size, yard.id, stock, checkouts, fallbackId);
+        const dirty = yard.system_key === "asset_dirty";
+        for (let index = 0; index < quantity; index += 1) {
+          const code = quantity > 1 ? `UNI-${size}-${index + 1}` : `UNI-${size}`;
+          const name = `${uniform.name} · ${size}`;
+          rows.push({
+            id: `${uniform.id}:${size}:${yard.id}:${index}`,
+            uniformId: uniform.id,
+            uniformName: uniform.name,
+            code,
+            name,
+            size,
+            photo_url: uniform.photo_url,
+            columnId: yard.id,
+            locationName: yard.name,
+            statusLabel: "Disponível",
+            place: "yard",
+            dirty,
+            checkoutId: null,
+            orderLabel: "",
+            lastMovedAt: uniform.updated_at,
+            search: [code, name, size, yard.name, "disponível"].join(" ").toLowerCase(),
+          });
+        }
       }
     }
   }
 
   for (const checkout of checkouts) {
     if (checkout.status !== "out") continue;
-    const order = orders.find((item) => item.id === checkout.order_id);
-    if (!isOpenStreetOrder(order)) continue;
+    const order = checkout.order_id ? orders.find((item) => item.id === checkout.order_id) : undefined;
+    if (checkout.order_id && !isOpenStreetOrder(order)) continue;
     const uniform = uniforms.find((item) => item.id === checkout.uniform_id);
     const qty = Math.max(1, checkout.quantity);
     for (let index = 0; index < qty; index += 1) {
@@ -149,14 +231,18 @@ function buildRows(
       const code = qty > 1 ? `UNI-${checkout.size}-${index + 1}` : `UNI-${checkout.size}`;
       rows.push({
         id: `${checkout.id}:${index}`,
+        uniformId: checkout.uniform_id,
+        uniformName: uniform?.name || "Uniforme",
         code,
         name,
         size: checkout.size,
         photo_url: uniform?.photo_url || null,
-        columnId: STREET_COLUMN,
+        columnId: UNIFORM_STREET_COLUMN,
         locationName: "Na rua",
         statusLabel: "Na rua",
         place: "street",
+        dirty: false,
+        checkoutId: checkout.id,
         orderLabel: order?.order_number || "",
         lastMovedAt: checkout.checked_out_at,
         search: [code, name, checkout.size, "na rua", order?.order_number || ""].join(" ").toLowerCase(),
@@ -168,27 +254,57 @@ function buildRows(
 }
 
 export function UniformesPage() {
-  const { uniforms, uniformCheckouts, orders, locations } = useAppStore();
+  const { uniforms, uniformCheckouts, uniformStock, orders, locations, moveUniformUnit, seedUniformStockIfNeeded } =
+    useAppStore();
   const [filter, setFilter] = useState<FilterId>("all");
+  const [openGroup, setOpenGroup] = useState<TypeGroup | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const yardLocations = useMemo(() => orderedAssetYardLocations(locations), [locations]);
+  useEffect(() => {
+    void seedUniformStockIfNeeded();
+  }, [seedUniformStockIfNeeded]);
+
+  const yardLocations = useMemo(() => orderedUniformYardLocations(locations), [locations]);
   const patio = useMemo(
-    () => buildRows(uniforms, uniformCheckouts, orders, locations),
-    [uniforms, uniformCheckouts, orders, locations]
+    () => buildRows(uniforms, uniformCheckouts, uniformStock, orders, yardLocations),
+    [uniforms, uniformCheckouts, uniformStock, orders, locations, yardLocations]
   );
   const columns = useMemo(() => boardColumns(yardLocations), [yardLocations]);
   const rows = useMemo(
-    () => patio.filter((row) => (filter === "all" ? true : filter === "ready" ? row.place === "home" : row.place === "street")),
+    () =>
+      patio.filter((row) =>
+        filter === "all" ? true : filter === "ready" ? row.place === "yard" : row.place === "street"
+      ),
     [patio, filter]
   );
   const counts = useMemo(
     () => ({
       all: patio.length,
-      ready: patio.filter((row) => row.place === "home").length,
+      ready: patio.filter((row) => row.place === "yard").length,
       out: patio.filter((row) => row.place === "street").length,
     }),
     [patio]
   );
+
+  const place = async (row: PatioRow, nextColumn: string) => {
+    if (!nextColumn || nextColumn === row.columnId) return;
+    setBusyId(row.id);
+    setError(null);
+    try {
+      await moveUniformUnit({
+        uniformId: row.uniformId,
+        size: row.size,
+        fromColumn: row.columnId,
+        toColumn: nextColumn,
+        checkoutId: row.checkoutId,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível mover o uniforme.");
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const filters: { id: FilterId; label: string }[] = [
     { id: "all", label: "Todos" },
@@ -201,14 +317,19 @@ export function UniformesPage() {
       <div>
         <h1 className="text-2xl font-bold">Uniformes</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          O que está em cada local do pátio. Área limpa = disponível para o kit. Na rua = saiu em pedido e ainda não
-          voltou. Cadastro consolidado por tamanho fica em{" "}
+          Uniformes ficam na Área suja, na Sala Trade ou na rua. Cadastro consolidado por tamanho fica em{" "}
           <Link to="/gestao/settings" className="underline underline-offset-2">
             Cadastros · Uniformes
           </Link>
           .
         </p>
       </div>
+
+      {error ? (
+        <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
 
       <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
         {columns.map((columnId) => {
@@ -226,7 +347,9 @@ export function UniformesPage() {
                 {cards.length === 0 ? (
                   <p className="px-1 py-8 text-center text-xs text-muted-foreground">Vazio</p>
                 ) : (
-                  cards.map((row) => <UniformCard key={row.id} row={row} />)
+                  groupByTypeSize(cards).map((group) => (
+                    <UniformCard key={group.id} group={group} onOpen={() => setOpenGroup(group)} />
+                  ))
                 )}
               </div>
             </section>
@@ -240,8 +363,7 @@ export function UniformesPage() {
             <div>
               <CardTitle className="text-base">Lista</CardTitle>
               <CardDescription>
-                Uniformes não têm ID físico único. Cada peça disponível fica na Área limpa; cada peça em pedido aparece
-                na rua com o número do pedido.
+                Mover status ou local atualiza o pátio. Na rua = saiu em pedido ou foi enviado pela lista.
               </CardDescription>
             </div>
             <div className="flex flex-wrap gap-1.5">
@@ -300,8 +422,25 @@ export function UniformesPage() {
                 width: "w-48",
                 sortable: true,
                 render: (row) => (
-                  <select className={selectClass} value={row.place} disabled>
-                    <option value="home">Disponível</option>
+                  <select
+                    className={selectClass}
+                    value={row.place}
+                    disabled={busyId === row.id}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => {
+                      const next = event.target.value as PlaceId;
+                      if (next === "street") {
+                        void place(row, UNIFORM_STREET_COLUMN);
+                        return;
+                      }
+                      const home =
+                        yardLocations.find((location) => isSalaTradeLocation(location))?.id ||
+                        yardLocations[0]?.id ||
+                        "";
+                      void place(row, row.place === "yard" ? row.columnId : home);
+                    }}
+                  >
+                    <option value="yard">Disponível</option>
                     <option value="street">Na rua</option>
                   </select>
                 ),
@@ -312,9 +451,19 @@ export function UniformesPage() {
                 width: "w-52",
                 sortable: true,
                 render: (row) => (
-                  <select className={selectClass} value={row.place} disabled>
-                    <option value="home">{row.place === "home" ? row.locationName : "Área limpa"}</option>
-                    <option value="street">Na rua</option>
+                  <select
+                    className={selectClass}
+                    value={row.columnId}
+                    disabled={busyId === row.id}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => void place(row, event.target.value)}
+                  >
+                    {yardLocations.map((location) => (
+                      <option key={location.id} value={location.id}>
+                        {location.name}
+                      </option>
+                    ))}
+                    <option value={UNIFORM_STREET_COLUMN}>Na rua</option>
                   </select>
                 ),
               },
@@ -342,6 +491,75 @@ export function UniformesPage() {
           />
         </CardContent>
       </Card>
+
+      <Dialog open={Boolean(openGroup)} onOpenChange={(open) => !open && setOpenGroup(null)}>
+        <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="text-lg">
+              {openGroup?.uniformName} · {openGroup?.size} ·{" "}
+              {openGroup ? columnTitle(openGroup.columnId, yardLocations) : ""}
+            </DialogTitle>
+            <DialogDescription className="text-sm">
+              {openGroup?.quantity} {openGroup?.quantity === 1 ? "peça" : "peças"} neste local.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <DataTable
+              tableId={`gestao-uniformes-kanban::${openGroup?.id || ""}`}
+              data={openGroup?.items || []}
+              searchKey="search"
+              searchPlaceholder="Buscar peça, pedido…"
+              emptyMessage="Nenhuma peça neste local."
+              maxHeight="50vh"
+              columns={[
+                {
+                  key: "code",
+                  header: "ID",
+                  width: "w-32",
+                  render: (row) => (
+                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">{row.code}</code>
+                  ),
+                },
+                {
+                  key: "size",
+                  header: "Tamanho",
+                  width: "w-24",
+                  render: (row) => (
+                    <Badge variant="outline" className="text-xs font-normal">
+                      {row.size}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: "statusLabel",
+                  header: "Status",
+                  width: "w-32",
+                  render: (row) => (
+                    <Badge variant="outline" className="text-xs font-normal">
+                      {row.statusLabel}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: "orderLabel",
+                  header: "Pedido",
+                  render: (row) =>
+                    row.orderLabel ? (
+                      <span className="text-xs font-medium">{row.orderLabel}</span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    ),
+                },
+              ]}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" className="h-9" onClick={() => setOpenGroup(null)}>
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

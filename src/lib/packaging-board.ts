@@ -1,4 +1,4 @@
-import { factoryLocation, resolvedAssetLocationId } from "@/lib/operational-assets";
+import { factoryLocation, isBoxAsset as assetIsBox, resolvedAssetLocationId } from "@/lib/operational-assets";
 import type { Asset, AssetType, Location, Movement, Product, Stock } from "@/types/database";
 
 export const BOX_TYPES = ["caixa_preta", "caixa_media", "caixa_grande"] as const;
@@ -10,11 +10,18 @@ export const BOX_TYPE_LABEL: Record<BoxType, string> = {
   caixa_grande: "Caixa grande",
 };
 
+export function boxTypeLabel(type: string) {
+  if (type === "caixa_preta" || type === "caixa_media" || type === "caixa_grande") {
+    return BOX_TYPE_LABEL[type];
+  }
+  return type.replace(/_/g, " ");
+}
+
 export const FACTORY_COLUMN = "__factory__";
 export const TRANSIT_COLUMN = "__transit__";
 
-export function isBoxAsset(asset: Asset): asset is Asset & { type: BoxType } {
-  return asset.type === "caixa_preta" || asset.type === "caixa_media" || asset.type === "caixa_grande";
+export function isBoxAsset(asset: Asset) {
+  return assetIsBox(asset);
 }
 
 export function boxColumnId(asset: Asset, locations: Location[] = []) {
@@ -122,6 +129,7 @@ export function canRetireBox(asset: Asset, stock: Stock[]) {
   return !stock.some((item) => item.asset_id === asset.id && item.quantity > 0 && item.status !== "depleted");
 }
 
-export function isBoxType(type: AssetType): type is BoxType {
-  return BOX_TYPES.includes(type as BoxType);
+export function isBoxType(type: AssetType | string): boolean {
+  if (BOX_TYPES.includes(type as BoxType)) return true;
+  return Boolean(type) && type !== "cooler" && type !== "freezer" && type !== "carrinho" && type !== "other";
 }

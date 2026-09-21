@@ -1,28 +1,28 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ExternalLink, Package } from "lucide-react";
+import { ExternalLink, Package, QrCode } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/ui/data-table";
-import { orderedAssetYardLocations } from "@/lib/locations";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { isSalaTradeLocation, orderedBoxYardLocations } from "@/lib/locations";
 import {
-  BOX_TYPE_LABEL,
   TRANSIT_COLUMN,
   boxColumnId,
   boxContents,
+  boxTypeLabel,
   canSendToFactory,
   columnLabel,
   isBoxAsset,
   lastActivityAt,
-  type BoxType,
 } from "@/lib/packaging-board";
 import {
   factoryLocation,
   planAssetPlacement,
   resolvedAssetLocationId,
 } from "@/lib/operational-assets";
-import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores";
 import type { Asset, AssetStatus, Location, Movement, Product, Stock } from "@/types/database";
 
@@ -62,28 +62,6 @@ function boxStatusLabel(status: AssetStatus) {
   return BOX_STATUSES.find((item) => item.value === status)?.label || status;
 }
 
-function statusChipClass(status: AssetStatus) {
-  if (status === "available" || status === "empty_ready_return") {
-    return "border-emerald-400/45 bg-emerald-500/15 text-emerald-900 dark:text-emerald-200";
-  }
-  if (status === "cleaning") {
-    return "border-amber-400/50 bg-amber-500/15 text-amber-900 dark:text-amber-200";
-  }
-  if (status === "with_product" || status === "at_factory") {
-    return "border-sky-400/45 bg-sky-500/15 text-sky-900 dark:text-sky-200";
-  }
-  if (status === "in_transit" || status === "in_use") {
-    return "border-sky-400/45 bg-sky-500/15 text-sky-900 dark:text-sky-200";
-  }
-  if (status === "inspection") {
-    return "border-violet-400/45 bg-violet-500/15 text-violet-900 dark:text-violet-200";
-  }
-  if (status === "damaged") {
-    return "border-rose-400/45 bg-rose-500/15 text-rose-900 dark:text-rose-200";
-  }
-  return "border-border bg-muted text-muted-foreground";
-}
-
 function matchesFilter(row: BoxRow, filter: FilterId) {
   if (filter === "all") return true;
   if (filter === "empty") return row.status === "available" || row.status === "empty_ready_return";
@@ -95,7 +73,6 @@ function matchesFilter(row: BoxRow, filter: FilterId) {
 }
 
 type BoxRow = Asset & {
-  type: BoxType;
   typeLabel: string;
   columnId: string;
   locationName: string;
@@ -106,20 +83,62 @@ type BoxRow = Asset & {
   search: string;
 };
 
-function boardColumns(yardLocations: Location[], rows: BoxRow[]) {
-  const yardIds = yardLocations.map((location) => location.id);
-  const extra = [...new Set(rows.map((row) => row.columnId))].filter(
-    (id) => id && id !== TRANSIT_COLUMN && !yardIds.includes(id)
-  );
-  return [...yardIds, ...extra, TRANSIT_COLUMN];
+function boardColumns(yardLocations: Location[], rows: BoxRow[], allLocations: Location[]) {
+  const factoryId = yardLocations.find((location) => location.system_key === "asset_factory")?.id;
+  const yardIds = yardLocations
+    .filter((location) => location.id !== factoryId)
+    .map((location) => location.id);
+  const extra = [...new Set(rows.map((row) => row.columnId))].filter((id) => {
+    if (!id || id === TRANSIT_COLUMN || id === factoryId || yardIds.includes(id)) return false;
+    const location = allLocations.find((item) => item.id === id);
+    return !location || !isSalaTradeLocation(location);
+  });
+  return [...yardIds, ...extra, TRANSIT_COLUMN, ...(factoryId ? [factoryId] : [])];
 }
 
-function BoxCard({ row }: { row: BoxRow }) {
-  const photo = row.photo_url;
+type TypeGroup = {
+  id: string;
+  type: string;
+  typeLabel: string;
+  columnId: string;
+  quantity: number;
+  photo_url: string | null;
+  fullCount: number;
+  boxes: BoxRow[];
+};
+
+function groupByType(cards: BoxRow[]): TypeGroup[] {
+  const groups = new Map<string, BoxRow[]>();
+  for (const row of cards) {
+    const list = groups.get(row.type) || [];
+    list.push(row);
+    groups.set(row.type, list);
+  }
+  return [...groups.entries()]
+    .map(([type, boxes]) => {
+      const sorted = [...boxes].sort((a, b) => a.code.localeCompare(b.code, "pt-BR", { numeric: true }));
+      const sample = sorted[0];
+      return {
+        id: `${sample.columnId}::${type}`,
+        type,
+        typeLabel: sample.typeLabel,
+        columnId: sample.columnId,
+        quantity: sorted.length,
+        photo_url: sample.photo_url || null,
+        fullCount: sorted.filter((box) => box.full).length,
+        boxes: sorted,
+      };
+    })
+    .sort((a, b) => a.typeLabel.localeCompare(b.typeLabel, "pt-BR"));
+}
+
+function TypeCard({ group, onOpen }: { group: TypeGroup; onOpen: () => void }) {
+  const photo = group.photo_url;
   return (
-    <Link
-      to={`/gestao/ativos/${row.id}`}
-      className="block overflow-hidden rounded-xl border bg-card text-left shadow-sm transition hover:border-primary/40 hover:shadow-md"
+    <button
+      type="button"
+      onClick={onOpen}
+      className="block w-full overflow-hidden rounded-xl border bg-card text-left shadow-sm transition hover:border-primary/40 hover:shadow-md"
     >
       <div className="relative aspect-[4/3] overflow-hidden bg-muted">
         {photo ? (
@@ -129,28 +148,24 @@ function BoxCard({ row }: { row: BoxRow }) {
             <Package className="h-8 w-8 text-muted-foreground/70" />
           </div>
         )}
-        <span
-          className={cn(
-            "absolute right-1.5 top-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-md border px-1.5 py-0.5 text-[10px] font-semibold leading-tight",
-            statusChipClass(row.status)
-          )}
-        >
-          {row.statusLabel}
+        <span className="absolute right-1.5 top-1.5 rounded-md border bg-background/90 px-1.5 py-0.5 text-[10px] font-semibold leading-tight">
+          {group.quantity} un
         </span>
       </div>
       <div className="space-y-0.5 p-2.5">
-        <p className="truncate text-sm font-medium leading-tight">{row.name}</p>
-        <p className="truncate font-mono text-[11px] text-muted-foreground">{row.code}</p>
-        <div className="flex items-center justify-between gap-2 pt-0.5">
-          <Badge variant="outline" className="h-5 max-w-[70%] truncate text-[10px] font-normal">
-            {row.typeLabel}
-          </Badge>
-          <span className="truncate text-[10px] font-medium text-muted-foreground">
-            {row.full ? row.fillLabel : "Vazia"}
-          </span>
-        </div>
+        <p className="truncate text-sm font-medium leading-tight">{group.typeLabel}</p>
+        <p className="text-[11px] text-muted-foreground">
+          {group.quantity} {group.quantity === 1 ? "caixa" : "caixas"} neste local
+        </p>
+        {group.fullCount > 0 ? (
+          <p className="text-[10px] font-medium text-sky-800 dark:text-sky-200">
+            {group.fullCount} com produto
+          </p>
+        ) : (
+          <p className="text-[10px] text-muted-foreground">Todas vazias</p>
+        )}
       </div>
-    </Link>
+    </button>
   );
 }
 
@@ -180,14 +195,14 @@ function buildRows(
       return {
         ...asset,
         type: asset.type,
-        typeLabel: BOX_TYPE_LABEL[asset.type],
+        typeLabel: boxTypeLabel(asset.type),
         columnId,
         locationName,
         statusLabel: statusText,
         full: contents.full,
         fillLabel,
         lastMoveAt,
-        search: [asset.code, asset.name, BOX_TYPE_LABEL[asset.type], locationName, statusText, fillLabel]
+        search: [asset.code, asset.name, boxTypeLabel(asset.type), locationName, statusText, fillLabel]
           .join(" ")
           .toLowerCase(),
       };
@@ -201,13 +216,18 @@ export function PackagingPage() {
   const [filter, setFilter] = useState<FilterId>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [openGroup, setOpenGroup] = useState<TypeGroup | null>(null);
+  const [qrBox, setQrBox] = useState<BoxRow | null>(null);
 
-  const yardLocations = useMemo(() => orderedAssetYardLocations(locations), [locations]);
+  const yardLocations = useMemo(() => orderedBoxYardLocations(locations), [locations]);
   const patio = useMemo(
     () => buildRows(assets, stock, products, movements, locations),
     [assets, stock, products, movements, locations]
   );
-  const columns = useMemo(() => boardColumns(yardLocations, patio), [yardLocations, patio]);
+  const columns = useMemo(
+    () => boardColumns(yardLocations, patio, locations),
+    [yardLocations, patio, locations]
+  );
   const rows = useMemo(() => patio.filter((row) => matchesFilter(row, filter)), [patio, filter]);
 
   const counts = useMemo(
@@ -225,7 +245,13 @@ export function PackagingPage() {
 
   const placeOptions = useMemo(() => {
     const seen = new Set(yardLocations.map((location) => location.id));
-    const extras = locations.filter((location) => location.is_active && !seen.has(location.id) && patio.some((row) => row.columnId === location.id));
+    const extras = locations.filter(
+      (location) =>
+        location.is_active &&
+        !seen.has(location.id) &&
+        !isSalaTradeLocation(location) &&
+        patio.some((row) => row.columnId === location.id)
+    );
     return [...yardLocations, ...extras];
   }, [yardLocations, locations, patio]);
 
@@ -242,6 +268,11 @@ export function PackagingPage() {
 
     let status = planned.status;
     const locationId = planned.location_id;
+    const dest = locationId ? locations.find((location) => location.id === locationId) : undefined;
+    if (dest && isSalaTradeLocation(dest)) {
+      setError("Embalagens não vão para Sala Trade.");
+      return;
+    }
     if (factory && locationId === factory.id && row.location_id !== factory.id) {
       if (hasProduct || !canSendToFactory(row, stock)) {
         setError(`${row.code} não pode ir à fábrica. Só caixa preta ou grande, vazia, após limpeza.`);
@@ -327,7 +358,9 @@ export function PackagingPage() {
                 {cards.length === 0 ? (
                   <p className="px-1 py-8 text-center text-xs text-muted-foreground">Vazio</p>
                 ) : (
-                  cards.map((row) => <BoxCard key={row.id} row={row} />)
+                  groupByType(cards).map((group) => (
+                    <TypeCard key={group.id} group={group} onOpen={() => setOpenGroup(group)} />
+                  ))
                 )}
               </div>
             </section>
@@ -477,6 +510,113 @@ export function PackagingPage() {
           />
         </CardContent>
       </Card>
+
+      <Dialog open={Boolean(openGroup)} onOpenChange={(open) => !open && setOpenGroup(null)}>
+        <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="text-lg">
+              {openGroup?.typeLabel} · {openGroup ? columnLabel(openGroup.columnId, locations) : ""}
+            </DialogTitle>
+            <DialogDescription className="text-sm">
+              {openGroup?.quantity} {openGroup?.quantity === 1 ? "caixa" : "caixas"} neste local, com código e QR
+              individuais.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <DataTable
+              tableId={`gestao-embalagens-kanban::${openGroup?.id || ""}`}
+              data={openGroup?.boxes || []}
+              searchKey="search"
+              searchPlaceholder="Buscar código..."
+              emptyMessage="Nenhuma caixa neste local."
+              maxHeight="50vh"
+              columns={[
+                {
+                  key: "code",
+                  header: "Código",
+                  width: "w-32",
+                  render: (row) => (
+                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">{row.code}</code>
+                  ),
+                },
+                {
+                  key: "qr",
+                  header: "QR",
+                  width: "w-20",
+                  sortable: false,
+                  align: "center",
+                  render: (row) => (
+                    <button
+                      type="button"
+                      className="mx-auto block bg-white p-0.5"
+                      title="Abrir QR"
+                      onClick={() => setQrBox(row)}
+                    >
+                      <QRCodeSVG value={row.code} size={40} level="M" includeMargin={false} />
+                    </button>
+                  ),
+                },
+                {
+                  key: "statusLabel",
+                  header: "Status",
+                  width: "w-32",
+                  render: (row) => (
+                    <Badge variant="outline" className="text-xs font-normal">
+                      {row.statusLabel}
+                    </Badge>
+                  ),
+                },
+                {
+                  key: "fillLabel",
+                  header: "Carga",
+                  render: (row) => (
+                    <span className="text-xs text-muted-foreground">{row.full ? row.fillLabel : "Vazia"}</span>
+                  ),
+                },
+              ]}
+              actions={(row) => (
+                <div className="flex items-center justify-center gap-1">
+                  <Button variant="ghost" size="icon" className="h-7 w-7" title="QR Code" onClick={() => setQrBox(row)}>
+                    <QrCode className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-7 w-7" asChild title="Ficha">
+                    <Link to={`/gestao/ativos/${row.id}`}>
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </Link>
+                  </Button>
+                </div>
+              )}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" className="h-9" onClick={() => setOpenGroup(null)}>
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(qrBox)} onOpenChange={(open) => !open && setQrBox(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-lg">
+              <QrCode className="h-5 w-5" />
+              QR Code — {qrBox?.code}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col items-center py-4">
+            <div className="rounded-lg border bg-white p-4">
+              {qrBox ? <QRCodeSVG value={qrBox.code} size={200} level="H" includeMargin /> : null}
+            </div>
+            <p className="mt-3 font-mono text-lg font-bold">{qrBox?.code}</p>
+          </div>
+          <DialogFooter>
+            <Button type="button" className="h-9" onClick={() => setQrBox(null)}>
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

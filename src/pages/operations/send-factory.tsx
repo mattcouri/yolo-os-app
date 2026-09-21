@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { BOX_TYPE_LABEL, canSendToFactory, isBoxAsset } from "@/lib/packaging-board";
+import { boxTypeLabel, canSendToFactory, isBoxAsset } from "@/lib/packaging-board";
 import { cleanLocation, factoryLocation } from "@/lib/operational-assets";
 import { useAppStore } from "@/stores";
 import type { Asset } from "@/types/database";
@@ -149,7 +149,7 @@ export function SendFactoryPage() {
                     <CheckCircle2 className="w-4 h-4 text-green-600" />
                     <code className="font-mono">{asset.code}</code>
                     <Badge variant="secondary" className="text-[10px] font-normal">
-                      {isBoxAsset(asset) ? BOX_TYPE_LABEL[asset.type] : asset.type}
+                      {isBoxAsset(asset) ? boxTypeLabel(asset.type) : asset.type}
                     </Badge>
                     <span className="text-muted-foreground">
                       {locations.find((location) => location.id === asset.location_id)?.name ||

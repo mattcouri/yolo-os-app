@@ -7,14 +7,16 @@ import type {
   Location,
 } from "@/types/database";
 
+export const EMBALAGEM_CATEGORY = "embalagem";
+
 export const BOX_ASSET_TYPES: AssetType[] = [
   "caixa_preta",
   "caixa_media",
   "caixa_grande",
 ];
 
-export function isBoxAsset(asset: Pick<Asset, "type">) {
-  return BOX_ASSET_TYPES.includes(asset.type);
+export function isBoxAsset(asset: Pick<Asset, "type" | "category">) {
+  return BOX_ASSET_TYPES.includes(asset.type) || asset.category === EMBALAGEM_CATEGORY;
 }
 
 export function isUniformAsset(asset: Pick<Asset, "category" | "code">) {
@@ -234,6 +236,38 @@ export function suggestedBoxCode(existingCodes: string[]) {
     if (match) max = Math.max(max, Number(match[1]));
   });
   return `CX-${String(max + 1).padStart(3, "0")}`;
+}
+
+export function parseSequentialCode(code: string) {
+  const match = code.trim().match(/^(.*?)(\d+)$/);
+  if (!match) return null;
+  return { prefix: match[1], start: Number(match[2]), pad: match[2].length };
+}
+
+export function sequentialBoxCodes(startCode: string, count: number) {
+  const qty = Math.max(1, Math.floor(count));
+  const parsed = parseSequentialCode(startCode);
+  if (!parsed) {
+    return Array.from({ length: qty }, (_, index) =>
+      index === 0 ? startCode : `${startCode}-${String(index + 1).padStart(3, "0")}`
+    );
+  }
+  return Array.from({ length: qty }, (_, index) => {
+    return `${parsed.prefix}${String(parsed.start + index).padStart(parsed.pad, "0")}`;
+  });
+}
+
+export function nextSequentialCode(startCode: string, existingCodes: string[]) {
+  const parsed = parseSequentialCode(startCode);
+  if (!parsed) return suggestedBoxCode(existingCodes);
+  const taken = new Set(existingCodes.map((code) => code.toLowerCase()));
+  let n = parsed.start;
+  let next = startCode;
+  while (taken.has(next.toLowerCase())) {
+    n += 1;
+    next = `${parsed.prefix}${String(n).padStart(parsed.pad, "0")}`;
+  }
+  return next;
 }
 
 export function monthsBetween(from: string, to = new Date()) {

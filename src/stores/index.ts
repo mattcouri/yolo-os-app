@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
-import { locationPurpose, productStockLocations } from '@/lib/locations';
+import { isSalaTradeLocation, locationPurpose, orderedUniformYardLocations, productStockLocations } from '@/lib/locations';
 import {
   ASSET_CLEAN_SYSTEM_KEY,
   ASSET_DIRTY_SYSTEM_KEY,
@@ -25,8 +25,18 @@ import {
   varianceQuantity,
 } from '@/lib/receipt-progress';
 import { locationRequiresBox } from '@/lib/stock-placement';
-import { BOX_TYPE_LABEL, TRANSIT_COLUMN, boxMatchesLocation, canRetireBox, canSendToFactory, isBoxType } from '@/lib/packaging-board';
+import { TRANSIT_COLUMN, boxMatchesLocation, canRetireBox, canSendToFactory, isBoxType, boxTypeLabel } from '@/lib/packaging-board';
 import { UNIFORM_STAY_OUT_NOTE, checkoutStaysOut } from '@/lib/kit-availability';
+import {
+  UNIFORM_SIZES,
+  UNIFORM_STREET_COLUMN,
+  applyUniformStockDeltas,
+  availableForSize,
+  stockQtyAt,
+  stockQtyForSize,
+  takeUniformFromYards,
+  totalForSize,
+} from '@/lib/uniforms';
 import { checkoutMatchesItem } from '@/lib/ativos-na-rua';
 import {
   closeOutLinesFromUnits,
@@ -49,7 +59,7 @@ import type {
   Order, OrderItem, SeparationJob, EquipmentReservation,
   OrderType, FulfillmentMethod, SeparationStage, StockGrade,
   PhysicalState, StockStatus, AssetComponent, AssetAttachment,
-  Uniform, UniformCheckout, UniformSize, Vehicle
+  Uniform, UniformCheckout, UniformSize, UniformStock, Vehicle
 } from '@/types/database';
 
 interface AppState {
@@ -75,6 +85,7 @@ interface AppState {
   equipmentReservations: EquipmentReservation[];
   uniforms: Uniform[];
   uniformCheckouts: UniformCheckout[];
+  uniformStock: UniformStock[];
   vehicles: Vehicle[];
   
   fetchAll: () => Promise<void>;
@@ -130,6 +141,7 @@ interface AppState {
   updateProduct: (id: string, data: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
   createAsset: (data: Partial<Asset> & Pick<Asset, 'code' | 'name' | 'type'>) => Promise<Asset>;
+  createAssets: (rows: Array<Partial<Asset> & Pick<Asset, 'code' | 'name' | 'type'>>) => Promise<Asset[]>;
   deleteAsset: (id: string) => Promise<void>;
   fetchAssetComponents: (assetId: string) => Promise<AssetComponent[]>;
   replaceAssetComponents: (assetId: string, components: Omit<AssetComponent, 'id' | 'parent_asset_id' | 'created_at'>[]) => Promise<AssetComponent[]>;
@@ -138,6 +150,14 @@ interface AppState {
   deleteAssetAttachment: (id: string) => Promise<void>;
   fetchEquipmentReservations: () => Promise<void>;
   fetchUniforms: () => Promise<void>;
+  seedUniformStockIfNeeded: () => Promise<void>;
+  moveUniformUnit: (input: {
+    uniformId: string;
+    size: UniformSize;
+    fromColumn: string;
+    toColumn: string;
+    checkoutId?: string | null;
+  }) => Promise<void>;
   fetchVehicles: () => Promise<void>;
   createVehicle: (name: string) => Promise<Vehicle>;
   updateVehicle: (id: string, name: string) => Promise<void>;
@@ -291,6 +311,69 @@ function readLocalVehicles(): Vehicle[] {
 function writeLocalVehicles(rows: Vehicle[]) {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(VEHICLES_KEY, JSON.stringify(rows));
+}
+
+function missingRelation(message: string) {
+  return /schema cache|does not exist|Could not find the table/i.test(message);
+}
+
+function salaTradeId(locations: Location[]) {
+  return locations.find((location) => location.is_active && isSalaTradeLocation(location))?.id || '';
+}
+
+function dirtyYardId(locations: Location[]) {
+  return orderedUniformYardLocations(locations).find((location) => location.system_key === 'asset_dirty')?.id || '';
+}
+
+async function saveUniformStock(prev: UniformStock[], next: UniformStock[]) {
+  if (!isSupabaseConfigured || !supabase) return;
+  const nextIds = new Set(next.map((row) => row.id));
+  const deleted = prev.filter((row) => !nextIds.has(row.id)).map((row) => row.id);
+  const upserts = next.filter((row) => {
+    const old = prev.find((item) => item.id === row.id);
+    return !old || old.quantity !== row.quantity || old.location_id !== row.location_id;
+  });
+  if (deleted.length) {
+    const result = await supabase.from('uniform_stock').delete().in('id', deleted);
+    if (result.error && !missingRelation(result.error.message)) throw new Error(result.error.message);
+  }
+  if (upserts.length) {
+    const result = await supabase.from('uniform_stock').upsert(upserts);
+    if (result.error && !missingRelation(result.error.message)) throw new Error(result.error.message);
+  }
+}
+
+function deductStockForLines(
+  stock: UniformStock[],
+  locations: Location[],
+  lines: { uniform_id: string; size: UniformSize; quantity: number }[]
+) {
+  let next = stock;
+  for (const line of lines) {
+    if (line.quantity <= 0) continue;
+    const taken = takeUniformFromYards(next, locations, line.uniform_id, line.size, line.quantity);
+    next = applyUniformStockDeltas(next, taken.deltas);
+  }
+  return next;
+}
+
+function addStockForLines(
+  stock: UniformStock[],
+  locationId: string,
+  lines: { uniform_id: string; size: UniformSize; quantity: number }[]
+) {
+  if (!locationId) return stock;
+  return applyUniformStockDeltas(
+    stock,
+    lines
+      .filter((line) => line.quantity > 0)
+      .map((line) => ({
+        uniform_id: line.uniform_id,
+        size: line.size,
+        location_id: locationId,
+        delta: line.quantity,
+      }))
+  );
 }
 
 function jobStageFromOrder(status: Order['status']): SeparationStage {
@@ -477,6 +560,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   equipmentReservations: [],
   uniforms: [],
   uniformCheckouts: [],
+  uniformStock: [],
   vehicles: [],
   
   clearError: () => set({ error: null }),
@@ -499,6 +583,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       state.fetchUniforms(),
       state.fetchVehicles(),
     ]);
+    await get().seedUniformStockIfNeeded();
     const next = get();
     rememberCodes(next.receipts.map((row) => row.receipt_number));
     rememberCodes(next.stock.map((row) => row.stock_number));
@@ -960,6 +1045,41 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => ({ assets: [...state.assets, newAsset] }));
       return newAsset;
     }
+  },
+
+  createAssets: async (rows) => {
+    if (rows.length === 0) return [];
+    const now = new Date().toISOString();
+    const locations = get().locations;
+    const newAssets: Asset[] = rows.map((data) => {
+      const status = data.status || 'available';
+      const location_id =
+        data.location_id ||
+        (needsYardLocation(status) ? defaultYardLocation(status, locations)?.id || null : null);
+      return {
+        id: generateId(),
+        is_active: true,
+        description: null,
+        control_method: 'individual',
+        quantity_on_hand: 1,
+        custom_fields: {},
+        ...data,
+        location_id,
+        status,
+        created_at: now,
+        updated_at: now,
+      };
+    });
+
+    if (isSupabaseConfigured && supabase) {
+      const { data: inserted, error } = await supabase.from('assets').insert(newAssets).select();
+      if (error) throw new Error(error.message);
+      const created = inserted || [];
+      set((state) => ({ assets: [...state.assets, ...created] }));
+      return created;
+    }
+    set((state) => ({ assets: [...state.assets, ...newAssets] }));
+    return newAssets;
   },
 
   deleteAsset: async (id) => {
@@ -2567,12 +2687,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
 
+    const nextUniformStock = deductStockForLines(get().uniformStock, get().locations, uniformCheckouts);
+    await saveUniformStock(get().uniformStock, nextUniformStock);
+
     set((s) => ({
       orders: [order, ...s.orders],
       orderItems: [...s.orderItems, ...orderItems],
       separationJobs: [...s.separationJobs, ...[separationJob]],
       equipmentReservations: [...s.equipmentReservations, ...reservations],
       uniformCheckouts: [...s.uniformCheckouts, ...uniformCheckouts],
+      uniformStock: nextUniformStock,
       assets: s.assets.map((asset) =>
         stayOutEquipment.includes(asset.id)
           ? { ...asset, status: 'in_use', last_moved_at: now, updated_at: now }
@@ -2709,6 +2833,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
 
+    const previousOut = get().uniformCheckouts.filter(
+      (row) => row.order_id === orderId && row.status === 'out'
+    );
+    const restoredStock = addStockForLines(
+      get().uniformStock,
+      salaTradeId(get().locations),
+      previousOut
+    );
+    const nextUniformStock = deductStockForLines(restoredStock, get().locations, uniformCheckouts);
+    await saveUniformStock(get().uniformStock, nextUniformStock);
+
     const nextOrder: Order = { ...existing, ...patch };
     set((s) => ({
       orders: s.orders.map((row) => (row.id === orderId ? nextOrder : row)),
@@ -2721,6 +2856,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...s.uniformCheckouts.filter((row) => row.order_id !== orderId),
         ...uniformCheckouts,
       ],
+      uniformStock: nextUniformStock,
       assets: s.assets.map((asset) => {
         if (stayOutEquipment.includes(asset.id)) {
           return { ...asset, status: 'in_use', last_moved_at: now, updated_at: now };
@@ -2774,6 +2910,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
 
+    const restored = addStockForLines(
+      get().uniformStock,
+      salaTradeId(get().locations),
+      get().uniformCheckouts.filter((row) => row.order_id === orderId && row.status === 'out')
+    );
+    await saveUniformStock(get().uniformStock, restored);
+
     set((s) => ({
       orders: s.orders.map((row) => (row.id === orderId ? { ...row, status: 'cancelled', updated_at: now } : row)),
       equipmentReservations: s.equipmentReservations.map((row) =>
@@ -2784,6 +2927,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...row, status: 'returned', returned_at: now }
           : row
       ),
+      uniformStock: restored,
       separationJobs: s.separationJobs.map((job) =>
         job.order_id === orderId ? { ...job, stage: 'retorno', updated_at: now } : job
       ),
@@ -3118,7 +3262,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const created: Asset = {
           id: generateId(),
           code,
-          name: `${BOX_TYPE_LABEL[type]} ${code}`,
+          name: `${boxTypeLabel(type)} ${code}`,
           description: null,
           type,
           location_id: planned.location_id,
@@ -3475,6 +3619,11 @@ export const useAppStore = create<AppState>((set, get) => ({
               row.id === checkout.id ? { ...row, status: 'returned', returned_at: now } : row
             ),
           }));
+          const returnedStock = addStockForLines(get().uniformStock, dirtyYardId(get().locations), [
+            { uniform_id: checkout.uniform_id, size: checkout.size, quantity: checkout.quantity },
+          ]);
+          await saveUniformStock(get().uniformStock, returnedStock);
+          set({ uniformStock: returnedStock });
         } else if (backN === 0) {
           if (isSupabaseConfigured && supabase) {
             const { error } = await supabase
@@ -3523,6 +3672,11 @@ export const useAppStore = create<AppState>((set, get) => ({
               returnedRow,
             ],
           }));
+          const returnedStock = addStockForLines(get().uniformStock, dirtyYardId(get().locations), [
+            { uniform_id: checkout.uniform_id, size: checkout.size, quantity: Math.max(1, backN) },
+          ]);
+          await saveUniformStock(get().uniformStock, returnedStock);
+          set({ uniformStock: returnedStock });
         }
       }
     }
@@ -3674,11 +3828,129 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!isSupabaseConfigured || !supabase) return;
     const { data: uniforms, error } = await supabase.from('uniforms').select('*').order('name');
     const { data: checkouts } = await supabase.from('uniform_checkouts').select('*').order('checked_out_at', { ascending: false });
+    const stockResult = await supabase.from('uniform_stock').select('*');
     if (error) {
       set({ error: error.message });
       return;
     }
-    set({ uniforms: uniforms || [], uniformCheckouts: checkouts || [] });
+    const stock =
+      stockResult.error && missingRelation(stockResult.error.message) ? [] : stockResult.error ? [] : stockResult.data || [];
+    if (stockResult.error && !missingRelation(stockResult.error.message)) {
+      set({ error: stockResult.error.message });
+    }
+    set({ uniforms: uniforms || [], uniformCheckouts: checkouts || [], uniformStock: stock });
+  },
+
+  seedUniformStockIfNeeded: async () => {
+    const tradeId = salaTradeId(get().locations);
+    if (!tradeId) return;
+    let stock = get().uniformStock;
+    const checkouts = get().uniformCheckouts;
+    for (const uniform of get().uniforms.filter((item) => item.is_active !== false)) {
+      for (const size of UNIFORM_SIZES) {
+        const available = availableForSize(uniform, size, checkouts);
+        const placed = stockQtyForSize(stock, uniform.id, size);
+        if (available > placed) {
+          stock = applyUniformStockDeltas(stock, [
+            { uniform_id: uniform.id, size, location_id: tradeId, delta: available - placed },
+          ]);
+        } else if (placed > available) {
+          const taken = takeUniformFromYards(stock, get().locations, uniform.id, size, placed - available);
+          stock = applyUniformStockDeltas(stock, taken.deltas);
+        }
+      }
+    }
+    const prev = get().uniformStock;
+    if (JSON.stringify(prev) === JSON.stringify(stock)) return;
+    try {
+      await saveUniformStock(prev, stock);
+      set({ uniformStock: stock });
+    } catch {
+      set({ uniformStock: stock });
+    }
+  },
+
+  moveUniformUnit: async ({ uniformId, size, fromColumn, toColumn, checkoutId }) => {
+    if (!fromColumn || !toColumn || fromColumn === toColumn) return;
+    const now = new Date().toISOString();
+    const locations = get().locations;
+    const yards = new Set(orderedUniformYardLocations(locations).map((location) => location.id));
+    const fromStreet = fromColumn === UNIFORM_STREET_COLUMN;
+    const toStreet = toColumn === UNIFORM_STREET_COLUMN;
+    if (!fromStreet && !yards.has(fromColumn)) throw new Error('Local de origem inválido para uniforme.');
+    if (!toStreet && !yards.has(toColumn)) throw new Error('Local de destino inválido para uniforme.');
+
+    let stock = get().uniformStock;
+    let checkouts = get().uniformCheckouts;
+
+    if (!fromStreet && stockQtyAt(stock, uniformId, size, fromColumn) < 1) {
+      void get().seedUniformStockIfNeeded();
+      stock = get().uniformStock;
+    }
+
+    if (fromStreet) {
+      const checkout = checkouts.find(
+        (row) =>
+          row.id === checkoutId &&
+          row.uniform_id === uniformId &&
+          row.size === size &&
+          row.status === 'out'
+      ) || checkouts.find((row) => row.uniform_id === uniformId && row.size === size && row.status === 'out');
+      if (!checkout) throw new Error('Não há uniforme na rua para mover.');
+      if (checkout.quantity > 1) {
+        checkouts = checkouts.map((row) =>
+          row.id === checkout.id ? { ...row, quantity: row.quantity - 1 } : row
+        );
+        if (isSupabaseConfigured && supabase) {
+          const { error } = await supabase
+            .from('uniform_checkouts')
+            .update({ quantity: checkout.quantity - 1 })
+            .eq('id', checkout.id);
+          if (error) throw new Error(error.message);
+        }
+      } else {
+        checkouts = checkouts.map((row) =>
+          row.id === checkout.id ? { ...row, status: 'returned', returned_at: now } : row
+        );
+        if (isSupabaseConfigured && supabase) {
+          const { error } = await supabase
+            .from('uniform_checkouts')
+            .update({ status: 'returned', returned_at: now })
+            .eq('id', checkout.id);
+          if (error) throw new Error(error.message);
+        }
+      }
+    } else {
+      if (stockQtyAt(stock, uniformId, size, fromColumn) < 1) {
+        throw new Error('Não há uniforme neste local.');
+      }
+      stock = applyUniformStockDeltas(stock, [{ uniform_id: uniformId, size, location_id: fromColumn, delta: -1 }]);
+    }
+
+    if (toStreet) {
+      const row: UniformCheckout = {
+        id: generateId(),
+        uniform_id: uniformId,
+        order_id: null,
+        size,
+        quantity: 1,
+        status: 'out',
+        checked_out_at: now,
+        returned_at: null,
+        notes: UNIFORM_STAY_OUT_NOTE,
+        created_at: now,
+      };
+      if (isSupabaseConfigured && supabase) {
+        const { error } = await supabase.from('uniform_checkouts').insert(row);
+        if (error) throw new Error(error.message);
+      }
+      checkouts = [row, ...checkouts];
+    } else {
+      stock = applyUniformStockDeltas(stock, [{ uniform_id: uniformId, size, location_id: toColumn, delta: 1 }]);
+    }
+
+    set({ uniformStock: stock, uniformCheckouts: checkouts });
+    void saveUniformStock(get().uniformStock, stock).catch(() => undefined);
   },
 
   fetchVehicles: async () => {
@@ -3750,10 +4022,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (isSupabaseConfigured && supabase) {
       const { data: inserted, error } = await supabase.from('uniforms').insert(row).select().single();
       if (error) throw new Error(error.message);
-      set((s) => ({ uniforms: [...s.uniforms, inserted] }));
-      return inserted;
+      const created = inserted;
+      const stock = addStockForLines(
+        get().uniformStock,
+        salaTradeId(get().locations),
+        UNIFORM_SIZES.map((size) => ({ uniform_id: created.id, size, quantity: totalForSize(created, size) }))
+      );
+      await saveUniformStock(get().uniformStock, stock);
+      set((s) => ({ uniforms: [...s.uniforms, created], uniformStock: stock }));
+      return created;
     }
-    set((s) => ({ uniforms: [...s.uniforms, row] }));
+    const stock = addStockForLines(
+      get().uniformStock,
+      salaTradeId(get().locations),
+      UNIFORM_SIZES.map((size) => ({ uniform_id: row.id, size, quantity: totalForSize(row, size) }))
+    );
+    set((s) => ({ uniforms: [...s.uniforms, row], uniformStock: stock }));
     return row;
   },
 
@@ -3766,6 +4050,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({
       uniforms: s.uniforms.map((u) => (u.id === id ? { ...u, ...data, updated_at: now } : u)),
     }));
+    const uniform = get().uniforms.find((item) => item.id === id);
+    if (uniform) {
+      let stock = get().uniformStock;
+      for (const size of UNIFORM_SIZES) {
+        const available = availableForSize(uniform, size, get().uniformCheckouts);
+        const placed = stockQtyForSize(stock, id, size);
+        if (available > placed) {
+          const tradeId = salaTradeId(get().locations);
+          if (tradeId) {
+            stock = applyUniformStockDeltas(stock, [
+              { uniform_id: id, size, location_id: tradeId, delta: available - placed },
+            ]);
+          }
+        } else if (placed > available) {
+          stock = applyUniformStockDeltas(
+            stock,
+            takeUniformFromYards(stock, get().locations, id, size, placed - available).deltas
+          );
+        }
+      }
+      await saveUniformStock(get().uniformStock, stock);
+      set({ uniformStock: stock });
+    }
   },
 
   deleteUniform: async (id) => {
@@ -3778,6 +4085,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         uniformCheckouts: hardDeleted
           ? s.uniformCheckouts.filter((c) => c.uniform_id !== id)
           : s.uniformCheckouts,
+        uniformStock: hardDeleted ? s.uniformStock.filter((row) => row.uniform_id !== id) : s.uniformStock,
       }));
     };
 
@@ -3828,6 +4136,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (error) throw new Error(error.message);
     }
     set((s) => ({ uniformCheckouts: [...s.uniformCheckouts, ...rows] }));
+    const nextStock = deductStockForLines(get().uniformStock, get().locations, rows);
+    await saveUniformStock(get().uniformStock, nextStock);
+    set({ uniformStock: nextStock });
   },
 
   returnUniformsForOrder: async (orderId, stayOut = []) => {
@@ -3861,7 +4172,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const returningIds = new Set(returning.map((c) => c.id));
+    const returnedStock = addStockForLines(get().uniformStock, dirtyYardId(get().locations), returning);
+    await saveUniformStock(get().uniformStock, returnedStock);
     set((s) => ({
+      uniformStock: returnedStock,
       uniformCheckouts: s.uniformCheckouts.map((c) => {
         if (returningIds.has(c.id)) return { ...c, status: 'returned', returned_at: now };
         if (stayOutIds.has(c.id) && c.status === 'out') {
