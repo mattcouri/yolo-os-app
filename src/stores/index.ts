@@ -3277,9 +3277,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             quantity: qty,
             quantity_before: lot.quantity,
             quantity_after: next,
-            to_location_id: lot.location_id,
+            to_location_id: lot.location_id || undefined,
             reason,
-            notes: move.notes,
+            notes: move.notes || undefined,
           });
           continue;
         }
@@ -3300,9 +3300,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           quantity: qty,
           quantity_before: lot.quantity,
           quantity_after: next,
-          to_location_id: lot.location_id,
+          to_location_id: lot.location_id || undefined,
           reason,
-          notes: move.notes,
+          notes: move.notes || undefined,
         });
       }
       return true;
