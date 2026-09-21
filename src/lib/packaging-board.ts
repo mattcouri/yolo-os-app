@@ -83,7 +83,7 @@ export function boxContents(asset: Asset, stock: Stock[], products: Product[]) {
     quantity,
     full: quantity > 0,
     sku: product?.code || null,
-    name: product?.flavor || product?.name || null,
+    name: product?.name || product?.code || null,
     grades,
     lots: [...new Set(rows.map((item) => item.lot).filter(Boolean))] as string[],
     state: rows.some((item) => item.physical_state === "frozen")

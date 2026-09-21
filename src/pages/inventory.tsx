@@ -15,6 +15,7 @@ import { applySavedColumnOrder, KANBAN_BOARDS } from "@/lib/kanban-order";
 import { locationsForKind } from "@/lib/locations";
 import { reservedPopUnitsForProduct, reservedQuantityForProduct, reservedSkuMap } from "@/lib/stock-reservations";
 import type { Asset, Location, MaterialStock, Product, ProductComponent, Stock } from "@/types/database";
+import { ProductMark } from "@/components/product-mark";
 
 type GradeKey = "AAA" | "B" | "C" | "blocked" | "analysis";
 
@@ -91,6 +92,7 @@ interface SkuLocationRow {
   productId: string;
   sku: string;
   name: string;
+  format: Product["format"];
   kind: "pop" | "material";
   isComposite: boolean;
   total: number;
@@ -135,7 +137,8 @@ function buildRows(
       locationName: locationName(locationId),
       productId,
       sku: product?.code || "—",
-      name: product?.flavor || product?.name || "SKU",
+      name: product?.name || product?.code || "SKU",
+      format: product?.format ?? null,
       kind,
       isComposite: Boolean(product?.is_composite),
       total: 0,
@@ -392,7 +395,7 @@ function SkuTotalsTable() {
         <DataTable
           data={rows}
           searchKey="search"
-          searchPlaceholder="Buscar SKU, produto, sabor ou tipo…"
+          searchPlaceholder="Buscar SKU, produto ou tipo…"
           emptyMessage="Nenhum SKU cadastrado."
           maxHeight="calc(100vh - 280px)"
           actionsHeader="Salvar"
@@ -403,7 +406,9 @@ function SkuTotalsTable() {
               width: "w-28",
               align: "center",
               sortable: true,
-              render: (row) => <span className="font-mono text-xs">{row.sku}</span>,
+              render: (row) => (
+                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{row.sku}</code>
+              ),
             },
             {
               key: "name",
@@ -442,13 +447,6 @@ function SkuTotalsTable() {
                   </Badge>
                 );
               },
-            },
-            {
-              key: "flavor",
-              header: "Sabor",
-              width: "w-32",
-              align: "center",
-              sortable: true,
             },
             {
               key: "kind",
@@ -601,22 +599,31 @@ function InventoryKanban({
                     >
                       <CardContent className="p-3">
                         <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="font-mono text-xs text-muted-foreground">{row.sku}</p>
-                            <p className="font-medium truncate">{row.name}</p>
+                          <div className="min-w-0 flex-1">
+                            <ProductMark
+                              wrap
+                              product={{
+                                code: row.sku,
+                                name: row.name,
+                                kind: row.kind === "material" ? "material" : "pop",
+                                format: row.format,
+                              }}
+                            />
                           </div>
-                          <ChevronDown className={`w-4 h-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+                          <ChevronDown className={`mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
                         </div>
-                        <div className="flex items-center justify-between mt-2 text-sm">
-                          <span>
-                            {row.total.toLocaleString("pt-BR")} {row.isComposite ? "SKU" : "un"}
-                          </span>
-                          <span className="text-muted-foreground">
+                        <div className="mt-0.5 flex items-center justify-between gap-2">
+                          <p className="min-w-0 text-[11px] leading-4 text-muted-foreground">
                             {row.kind === "material"
-                              ? row.lots || "Material"
+                              ? row.lots
+                                ? `Lote ${row.lots}`
+                                : "Sem lote"
                               : row.isComposite
                                 ? `${row.pops.toLocaleString("pt-BR")} pops`
                                 : `${row.boxCount} caixa${row.boxCount === 1 ? "" : "s"}`}
+                          </p>
+                          <span className="shrink-0 text-[11px] font-medium leading-4 whitespace-nowrap">
+                            {row.total.toLocaleString("pt-BR")} {row.isComposite ? "SKU" : "un"}
                           </span>
                         </div>
                         {row.isComposite && (
@@ -1103,7 +1110,7 @@ function InventoryBoard({ kind }: { kind: "sku" | "material" }) {
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          placeholder={kind === "material" ? "Buscar material, local ou lote…" : "Buscar SKU, sabor, local ou lote…"}
+          placeholder={kind === "material" ? "Buscar material, local ou lote…" : "Buscar SKU, produto, local ou lote…"}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="pl-9"

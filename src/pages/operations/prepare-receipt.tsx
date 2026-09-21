@@ -235,7 +235,7 @@ export function PrepareReceiptPage() {
                 >
                   <span className="flex-1 min-w-0">
                     <strong className="block text-lg truncate">
-                      {line.product.name || line.product.flavor}
+                      {line.product.name || line.product.code}
                     </strong>
                     <span className="text-sm text-muted-foreground">
                       {line.product.code} · {line.item.lot || "Sem lote"} · declarado{" "}
@@ -258,7 +258,7 @@ export function PrepareReceiptPage() {
               >
                 <span className="flex-1 min-w-0">
                   <strong className="block text-lg truncate">
-                    {line.product.name || line.product.flavor}
+                    {line.product.name || line.product.code}
                   </strong>
                   <span className="text-sm text-muted-foreground">
                     {line.product.code} · {line.item.lot || "Sem lote"} · declarado{" "}
@@ -297,7 +297,7 @@ export function PrepareReceiptPage() {
                 return (
                   <div key={insp.id} className="flex justify-between gap-3 py-3 border-b last:border-0 text-sm">
                     <div>
-                      <strong>{product?.name || product?.flavor}</strong>
+                      <strong>{product?.name || product?.code}</strong>
                       <p className="text-xs text-muted-foreground">
                         {insp.actual_quantity} un · AAA {insp.count_aaa} · B {insp.count_b} · C {insp.count_c}
                         {insp.rejected_quantity > 0 ? ` · rejeito ${insp.rejected_quantity}` : ""}
@@ -398,7 +398,7 @@ function ClosePrepareDialog({
               return (
                 <div key={item.id} className="flex justify-between gap-3 px-3 py-2">
                   <span className="min-w-0">
-                    <strong className="block truncate">{product?.name || product?.flavor || product?.code}</strong>
+                    <strong className="block truncate">{product?.name || product?.code}</strong>
                     <span className="text-xs text-muted-foreground">
                       declarado {item.quantity.toLocaleString("pt-BR")} · contado {lineCounted.toLocaleString("pt-BR")}
                     </span>
@@ -612,7 +612,7 @@ function PrepareBatchDialog({
       <DialogContent className="max-w-6xl max-h-[92vh] overflow-y-auto">
         <form onSubmit={handleSubmit} className="space-y-5">
           <DialogHeader>
-            <DialogTitle>Preparar {line.product.name || line.product.flavor}</DialogTitle>
+            <DialogTitle>Preparar {line.product.name || line.product.code}</DialogTitle>
             <DialogDescription>
               {line.product.code} · {line.item.lot || "Sem lote"}
               {line.remaining > 0

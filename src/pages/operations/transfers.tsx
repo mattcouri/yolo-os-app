@@ -14,6 +14,7 @@ import {
   physicalStateOf,
 } from "@/lib/assembly";
 import { useAppStore } from "@/stores";
+import { ProductMark, productDisplayName, productOptionLabel } from "@/components/product-mark";
 import type { Asset, Location, Product, Stock } from "@/types/database";
 
 const GRADE_LABEL: Record<string, string> = {
@@ -153,7 +154,7 @@ export function BatchTransferPage() {
     const existing = findAssemblyBox(stock, row.stock.product_id, physicalStateOf(row.stock));
     if (existing && existing.quantity > 0 && existing.id !== row.stock.id) {
       const existingAsset = assets.find((item) => item.id === existing.asset_id);
-      return `Já existe montagem de ${row.product?.flavor || row.product?.name}: ${existingAsset?.code || existing.stock_number}.`;
+      return `Já existe montagem de ${productDisplayName(row.product)}: ${existingAsset?.code || existing.stock_number}.`;
     }
     return "";
   };
@@ -347,7 +348,7 @@ export function BatchTransferPage() {
               <option value="">{selectable.length ? "Escolher caixa…" : "Nenhuma caixa restante"}</option>
               {selectable.map((row) => (
                 <option key={row.stock.id} value={row.stock.id}>
-                  {row.asset.code} · {row.product?.flavor || row.product?.code} · {gradeLabel(row.stock)} ·{" "}
+                  {row.asset.code} · {row.product ? productOptionLabel(row.product) : "—"} · {gradeLabel(row.stock)} ·{" "}
                   {row.stock.quantity} un
                   {!originId && row.location ? ` · ${row.location.name}` : ""}
                 </option>
@@ -363,9 +364,9 @@ export function BatchTransferPage() {
                     <CheckCircle2 className="w-4 h-4 text-green-600 shrink-0" />
                     <span className="min-w-0">
                       <code className="font-mono text-xs font-medium">{row.asset.code}</code>
-                      <span className="text-muted-foreground">
+                      <span className="text-muted-foreground inline-flex min-w-0 items-center gap-1">
                         {" · "}
-                        {row.product?.flavor || row.product?.name}
+                        <ProductMark product={row.product} />
                         {" · "}
                         {gradeLabel(row.stock)}
                         {" · "}

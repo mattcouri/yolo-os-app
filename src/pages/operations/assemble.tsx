@@ -17,6 +17,7 @@ import {
   stateLabel,
 } from "@/lib/assembly";
 import { useAppStore } from "@/stores";
+import { ProductMark, ProductSelect } from "@/components/product-mark";
 import type { PhysicalState, Product } from "@/types/database";
 
 function productLabel(product?: Product | null) {
@@ -188,19 +189,13 @@ export function AssemblePage() {
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="sm:col-span-2 space-y-1">
               <Label>SKU composto</Label>
-              <select
-                className="flex h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+              <ProductSelect
+                className="h-11"
+                products={composites}
                 value={skuId}
-                onChange={(e) => setSkuId(e.target.value)}
-              >
-                <option value="">Cartucho, caixa, pallet…</option>
-                {composites.map((product) => (
-                  <option key={product.id} value={product.id}>
-                    {product.code} · {product.name}
-                    {product.min_quantity > 0 ? ` · mín. ${product.min_quantity}` : ""}
-                  </option>
-                ))}
-              </select>
+                onChange={setSkuId}
+                placeholder="Cartucho, caixa, pallet…"
+              />
             </div>
             <div className="space-y-1">
               <Label>Quantidade</Label>
@@ -267,10 +262,10 @@ export function AssemblePage() {
               return (
                 <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl border p-3">
                   <div>
-                    <p className="font-medium">{product?.code} · {product?.name}</p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="font-medium"><ProductMark product={product} state={physicalStateOf(item)} size="md" /></p>
+                    <p className="text-[13px] text-muted-foreground">
                       {stateLabel(physicalStateOf(item))} · {item.grade || "—"}
-                      {product?.min_quantity ? ` · mínimo ${product.min_quantity}` : ""}
+                      {product?.min_quantity ? ` · Estoque Mínimo: ${product.min_quantity}` : ""}
                     </p>
                   </div>
                   <Badge variant={low ? "destructive" : "secondary"}>{item.quantity} un</Badge>
@@ -285,7 +280,7 @@ export function AssemblePage() {
         <summary className="cursor-pointer font-medium text-sm">Desmontar (exceção)</summary>
         <div className="mt-3 space-y-3">
           <p className="text-xs text-muted-foreground">
-            Não é o fluxo normal. Unidades voltam para a caixa de montagem do sabor.
+            Não é o fluxo normal. Unidades voltam para a caixa de montagem do produto.
           </p>
           <select
             className="flex h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
@@ -297,7 +292,7 @@ export function AssemblePage() {
               const product = products.find((row) => row.id === item.product_id);
               return (
                 <option key={item.id} value={item.id}>
-                  {product?.code} · {item.quantity} un · {stateLabel(physicalStateOf(item))}
+                  {product ? `${product.code} · ${product.name}` : "SKU"} · {item.quantity} un · {stateLabel(physicalStateOf(item))}
                 </option>
               );
             })}

@@ -84,7 +84,7 @@ export function HomePage() {
       const product = products.find((p) => p.id === s.product_id);
       return {
         id: s.id,
-        name: product?.flavor || product?.name || "Produto",
+        name: product?.name || product?.code || "Produto",
         detail: `${s.quantity} un · ${s.lot || "Sem lote"}`,
         status: "Conferir",
         icon: <CheckSquare className="w-5 h-5" />,

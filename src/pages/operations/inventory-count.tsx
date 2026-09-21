@@ -335,7 +335,7 @@ function ActiveCountView({
       return {
         ...l,
         code: asset?.code || "",
-        flavor: product?.flavor || product?.name || "",
+        flavor: product?.name || product?.code || "",
         systemLocation: stockItem?.location_id || "",
       };
     }),
@@ -348,7 +348,7 @@ function ActiveCountView({
           id: s.id,
           stockId: s.id,
           code: asset?.code || "",
-          flavor: product?.flavor || product?.name || "",
+          flavor: product?.name || product?.code || "",
           systemQty: s.quantity,
           actualQty: null as number | null,
           systemLocation: s.location_id,

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ClipboardList, MapPin, Trash2 } from "lucide-react";
+import { ClipboardList, MapPin, Trash2, Undo2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +32,7 @@ type HistoryRow = {
   items: string;
   estoque: string;
   retorno: string;
+  extornado: boolean;
   search: string;
 };
 
@@ -134,11 +135,13 @@ function buildHistoryRows(
         items: itemText || "—",
         estoque,
         retorno,
+        extornado: Boolean(close?.extornado),
         search: [
           order.order_number,
           type,
           organization,
           order.recipient_name,
+          close?.extornado ? "extornado" : "",
           locationSummary(order, items),
           itemText,
           estoque,
@@ -152,11 +155,12 @@ function buildHistoryRows(
 }
 
 export function ReportsPage() {
-  const { orders, orderItems, separationJobs, assets, uniforms, uniformCheckouts, deleteClosedOrder } = useAppStore();
+  const { orders, orderItems, separationJobs, assets, uniforms, uniformCheckouts, deleteClosedOrder, returnClosedOrder } = useAppStore();
   const { isAdmin } = useAuthProfile();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [deleting, setDeleting] = useState<HistoryRow | null>(null);
+  const [returning, setReturning] = useState<HistoryRow | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -192,6 +196,20 @@ export function ReportsPage() {
       setDeleting(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Não foi possível excluir o pedido.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmReturn = async () => {
+    if (!returning) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await returnClosedOrder(returning.id);
+      setReturning(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível registrar a devolução.");
     } finally {
       setBusy(false);
     }
@@ -276,9 +294,16 @@ export function ReportsPage() {
                 width: "w-28",
                 sortable: true,
                 render: (row: HistoryRow) => (
-                  <Link to={`/separacao/${row.id}`} className="font-medium text-primary hover:underline">
-                    {row.orderNumber}
-                  </Link>
+                  <div className="flex items-center gap-1.5">
+                    <Link to={`/separacao/${row.id}`} className="font-medium text-primary hover:underline">
+                      {row.orderNumber}
+                    </Link>
+                    {row.extornado ? (
+                      <Badge variant="secondary" className="text-[10px] font-normal">
+                        Extornado
+                      </Badge>
+                    ) : null}
+                  </div>
                 ),
               },
               {
@@ -323,19 +348,36 @@ export function ReportsPage() {
             actions={
               isAdmin
                 ? (row) => (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                      title="Excluir registro"
-                      onClick={() => {
-                        setError(null);
-                        setDeleting(row);
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <div className="flex items-center justify-end gap-0.5">
+                      {!row.extornado ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          title="Devolução"
+                          onClick={() => {
+                            setError(null);
+                            setReturning(row);
+                          }}
+                        >
+                          <Undo2 className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        title="Excluir registro"
+                        onClick={() => {
+                          setError(null);
+                          setDeleting(row);
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   )
                 : undefined
             }
@@ -441,7 +483,7 @@ export function ReportsPage() {
             <DialogTitle>Excluir pedido do histórico?</DialogTitle>
             <DialogDescription>
               {deleting
-                ? `O pedido ${deleting.orderNumber} (${deleting.organization}) será removido desta lista. Essa ação não pode ser desfeita.`
+                ? `O pedido ${deleting.orderNumber} (${deleting.organization}) será removido desta lista e o estoque de SKUs e materiais volta para o inventário.`
                 : "O registro será removido desta lista."}
             </DialogDescription>
           </DialogHeader>
@@ -452,6 +494,28 @@ export function ReportsPage() {
             </Button>
             <Button type="button" variant="destructive" disabled={busy} onClick={() => void confirmDelete()}>
               {busy ? "Excluindo…" : "Excluir"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(returning)} onOpenChange={(open) => !busy && !open && setReturning(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Registrar devolução?</DialogTitle>
+            <DialogDescription>
+              {returning
+                ? `O pedido ${returning.orderNumber} (${returning.organization}) permanece no histórico como Extornado. O estoque de SKUs e materiais volta para o inventário.`
+                : "O pedido permanece no histórico como Extornado."}
+            </DialogDescription>
+          </DialogHeader>
+          {error && returning ? <p className="text-sm text-destructive">{error}</p> : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={busy} onClick={() => setReturning(null)}>
+              Cancelar
+            </Button>
+            <Button type="button" disabled={busy} onClick={() => void confirmReturn()}>
+              {busy ? "Registrando…" : "Devolução"}
             </Button>
           </DialogFooter>
         </DialogContent>

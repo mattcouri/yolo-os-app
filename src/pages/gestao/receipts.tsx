@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAppStore } from "@/stores";
+import { ProductMark } from "@/components/product-mark";
 import { countedForItem, countedQuantity, declaredQuantity, formatVariance, isDirectEntryReceipt, remainingQuantity, varianceQuantity } from "@/lib/receipt-progress";
 import type { Receipt, ReceiptItem } from "@/types/database";
 
@@ -400,7 +401,7 @@ export function ReceiptsPage() {
                   return (
                     <div key={item.id} className="space-y-1">
                       <div className="grid grid-cols-[1fr_90px_110px] gap-2 items-end">
-                        <p className="text-sm truncate pb-2">{product?.code} · {product?.flavor || product?.name}</p>
+                        <p className="text-sm truncate pb-2"><ProductMark product={product} /></p>
                         <div className="space-y-1">
                           <Label className="text-xs">Qtd</Label>
                           <Input

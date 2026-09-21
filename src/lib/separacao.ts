@@ -415,6 +415,8 @@ export interface CloseOutRecord {
   lines: ReturnLine[];
   units?: ReturnUnit[];
   sku_deductions?: SkuDeduction[];
+  extornado?: boolean;
+  extornado_at?: string;
 }
 
 export const RETURN_UNIT_CONDITIONS: { value: ReturnUnitCondition; label: string; hint: string }[] = [

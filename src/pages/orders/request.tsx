@@ -25,6 +25,7 @@ import { reservedQuantityForProduct, reservedSkuMap } from "@/lib/stock-reservat
 import { isBoxAsset, isUniformAsset } from "@/lib/operational-assets";
 import { InventoryShortageAlert } from "@/components/inventory-shortage-alert";
 import { StageTag, stageTagFromStatus } from "@/components/separacao/stage-tag";
+import { ProductSelect, productDisplayName } from "@/components/product-mark";
 
 const REQUEST_TYPES: { value: OrderType; label: string; hint: string }[] = [
   { value: "venda", label: "Venda", hint: "Cliente paga" },
@@ -70,6 +71,10 @@ function availableForLine(
     line.kind === "pop" ? (line.state === "frozen" ? "frozen" : "liquid") : null
   );
   return Math.max(0, onHand - held);
+}
+
+function stateFromFormat(format?: string | null): PhysicalState {
+  return format === "congelado" ? "frozen" : "liquid";
 }
 
 const emptyLine = (kind: LineKind): OrderLine => ({
@@ -229,12 +234,12 @@ export function OrderRequestPage() {
       const qty = Math.max(0, Number(line.quantity) || 0);
       if (qty <= 0) continue;
       const product = products.find((row) => row.id === line.productId);
-      const state = line.kind === "pop" ? (line.state === "frozen" ? "frozen" : "liquid") : "";
+      const state = line.kind === "pop" ? stateFromFormat(product?.format) : "";
       const key = `${line.kind}:${line.productId}:${state}`;
       const current = needed.get(key);
       needed.set(key, {
         productId: line.productId,
-        name: product?.name || product?.flavor || "Produto",
+        name: productDisplayName(product) === "—" ? "Produto" : productDisplayName(product),
         sku: product?.code || "—",
         kind: line.kind,
         state,
@@ -478,7 +483,10 @@ export function OrderRequestPage() {
 
   const addLine = (kind: LineKind) => {
     const line = emptyLine(kind);
-    if (kind === "pop") line.productId = pops[0]?.id || "";
+    if (kind === "pop") {
+      line.productId = pops[0]?.id || "";
+      line.state = pops[0] ? stateFromFormat(pops[0].format) : "liquid";
+    }
     if (kind === "material") line.productId = materials[0]?.id || "";
     setLines((current) => [...current, line]);
   };
@@ -495,8 +503,8 @@ export function OrderRequestPage() {
       setError("Selecione o solicitante.");
       return;
     }
-    if (!organization.trim() || !recipient.trim() || !recipientContact.trim()) {
-      setError("Preencha empresa, quem recebe e o contato.");
+    if (!recipient.trim() || !recipientContact.trim()) {
+      setError("Preencha quem recebe e o contato.");
       return;
     }
     if (!neededDate || !neededTime) {
@@ -580,11 +588,14 @@ export function OrderRequestPage() {
       }
       items.push({
         product_id: product.id,
-        name: product.flavor || product.name,
+        name: product.name || product.code,
         code: product.code,
         quantity: qty,
         unit: product.unit || "un",
-        requested_state: line.kind === "pop" ? line.state || "liquid" : undefined,
+        requested_state:
+          line.kind === "pop"
+            ? stateFromFormat(products.find((p) => p.id === line.productId)?.format)
+            : undefined,
         is_returnable: false,
       });
     }
@@ -758,8 +769,12 @@ export function OrderRequestPage() {
                 <Input value={recipient} onChange={(e) => setRecipient(e.target.value)} required />
               </div>
               <div className="space-y-1.5">
-                <Label>Empresa</Label>
-                <Input value={organization} onChange={(e) => setOrganization(e.target.value)} required />
+                <Label>Empresa (opcional)</Label>
+                <Input
+                  value={organization}
+                  onChange={(e) => setOrganization(e.target.value)}
+                  placeholder="Não obrigatório"
+                />
               </div>
               <div className="space-y-1.5">
                 <Label>WhatsApp / telefone</Label>
@@ -945,35 +960,22 @@ export function OrderRequestPage() {
               {lines.map((line) => (
                 <div
                   key={line.id}
-                  className="grid grid-cols-[1fr_auto_auto] items-end gap-2 rounded-lg border p-2 sm:grid-cols-[72px_1fr_auto_auto_auto]"
+                  className="grid grid-cols-[1fr_auto_auto] items-end gap-2 rounded-lg border p-2 sm:grid-cols-[72px_1fr_auto_auto]"
                 >
                   <Badge variant="secondary" className="hidden h-8 justify-center sm:flex">
                     {line.kind === "pop" ? "SKU" : "Mat."}
                   </Badge>
-                  <select
-                    className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                  <ProductSelect
+                    products={line.kind === "pop" ? pops : materials}
                     value={line.productId}
-                    onChange={(e) => updateLine(line.id, { productId: e.target.value })}
-                  >
-                    <option value="">Selecionar</option>
-                    {(line.kind === "pop" ? pops : materials).map((product) => (
-                      <option key={product.id} value={product.id}>
-                        {product.code} · {product.flavor || product.name}
-                      </option>
-                    ))}
-                  </select>
-                  {line.kind === "pop" ? (
-                    <select
-                      className="h-9 w-[108px] rounded-md border border-input bg-background px-2 text-sm"
-                      value={line.state}
-                      onChange={(e) => updateLine(line.id, { state: e.target.value as PhysicalState })}
-                    >
-                      <option value="liquid">Líquido</option>
-                      <option value="frozen">Congelado</option>
-                    </select>
-                  ) : (
-                    <span className="hidden w-[108px] sm:block" />
-                  )}
+                    onChange={(productId) => {
+                      const product = products.find((row) => row.id === productId);
+                      updateLine(line.id, {
+                        productId,
+                        state: line.kind === "pop" ? stateFromFormat(product?.format) : "",
+                      });
+                    }}
+                  />
                   <Input
                     type="number"
                     min="1"

@@ -12,6 +12,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { CameraQrButton } from "@/components/camera-qr-button";
 import { isAssemblyBox, physicalStateOf, stateLabel } from "@/lib/assembly";
+import { ProductMark } from "@/components/product-mark";
 import { useAppStore } from "@/stores";
 
 interface ActionCardProps {
@@ -83,10 +84,9 @@ function AssemblyBoxesPanel() {
             const frozen = physicalStateOf(item) === "frozen";
             return (
               <li key={item.id} className="flex h-10 items-center gap-3 text-sm">
-                <span className="min-w-0 flex-1 truncate font-medium">{product?.name || "—"}</span>
-                {product?.code ? (
-                  <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs">{product.code}</code>
-                ) : null}
+                <span className="min-w-0 flex-1 truncate">
+                  <ProductMark product={product} />
+                </span>
                 <Badge
                   variant="secondary"
                   className={`shrink-0 text-xs font-normal ${

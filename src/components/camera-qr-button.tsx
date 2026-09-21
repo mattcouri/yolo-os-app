@@ -21,9 +21,11 @@ function getDetector(): BarcodeDetectorLike | null {
 export function CameraQrButton({
   onResult,
   disabled,
+  className,
 }: {
   onResult: (value: string) => void;
   disabled?: boolean;
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
@@ -95,7 +97,7 @@ export function CameraQrButton({
       <Button
         type="button"
         variant="outline"
-        className="h-10 w-10 shrink-0 px-0"
+        className={className ? `shrink-0 px-0 ${className}` : "h-10 w-10 shrink-0 px-0"}
         disabled={disabled}
         title="Escanear QR com a câmera"
         onClick={() => setOpen(true)}

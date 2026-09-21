@@ -7,16 +7,10 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useAppStore } from "@/stores";
+import { CameraQrButton } from "@/components/camera-qr-button";
 import { productStockLocations } from "@/lib/locations";
 import { factoryLocation } from "@/lib/operational-assets";
 import type { Product } from "@/types/database";
-
-const PRODUCT_LINE_LABELS: Record<string, string> = {
-  caipi: "Caipi",
-  drinks: "Drinks",
-  cremoso: "Cremoso",
-  frutas: "Frutas",
-};
 
 const MATERIAL_CATEGORY_LABELS: Record<string, string> = {
   embalagem: "Embalagem",
@@ -25,46 +19,28 @@ const MATERIAL_CATEGORY_LABELS: Record<string, string> = {
   outro: "Outro",
 };
 
-function productLineLabel(value: string | null | undefined) {
-  if (!value) return "";
-  return PRODUCT_LINE_LABELS[value] || value;
+function byCode(a: Product, b: Product) {
+  return a.code.localeCompare(b.code, "pt-BR");
 }
 
-function groupByLine(products: Product[], prefix: string) {
-  const groups = new Map<string, Product[]>();
-  for (const product of products) {
-    const key = productLineLabel(product.product_line) || "Outros";
-    const list = groups.get(key) || [];
-    list.push(product);
-    groups.set(key, list);
-  }
-  const entries = [...groups.entries()];
-  return entries.map(([line, items]) => ({
-    label: entries.length > 1 ? `${prefix} · ${line}` : prefix,
-    items,
-  }));
+function popsOf(products: Product[], format: Product["format"], composite: boolean) {
+  return products
+    .filter((product) => product.kind === "pop" && Boolean(product.is_composite) === composite && product.format === format)
+    .sort(byCode);
 }
 
 function sortCatalog(products: Product[]) {
-  return [...products].sort((a, b) => {
-    const line = (a.product_line || a.category || "").localeCompare(b.product_line || b.category || "", "pt-BR");
-    if (line !== 0) return line;
-    return a.code.localeCompare(b.code, "pt-BR");
-  });
+  return [...products].sort(byCode);
 }
 
 function skuOptionLabel(product: Product) {
   const formatIcon = product.format === "congelado" ? "❄️" : product.format === "liquido" ? "💧" : "";
-  const line = productLineLabel(product.product_line);
   const units = product.base_quantity || 1;
-  return [formatIcon, `${product.code} - ${product.name}`, line ? `• ${line}` : "", `(${units} un)`]
-    .filter(Boolean)
-    .join(" ");
+  return [formatIcon, `${product.code} · ${product.name}`, `(${units} un)`].filter(Boolean).join(" ");
 }
 
 function materialOptionLabel(product: Product) {
-  const category = product.category ? MATERIAL_CATEGORY_LABELS[product.category] || product.category : "";
-  return [`📦 ${product.code} - ${product.name}`, category ? `• ${category}` : ""].filter(Boolean).join(" ");
+  return `📦 ${product.code} · ${product.name}`;
 }
 
 interface ReceiptItem {
@@ -118,7 +94,12 @@ export function ReceivingPage() {
   const destinationName = stockDestinations.find((location) => location.id === destinationId)?.name;
   const defaultProductId = isDirect
     ? materialProducts[0]?.id || ""
-    : simpleProducts[0]?.id || compositeProducts[0]?.id || materialProducts[0]?.id || "";
+    : popsOf(activeProducts, "congelado", false)[0]?.id ||
+      popsOf(activeProducts, "congelado", true)[0]?.id ||
+      popsOf(activeProducts, "liquido", false)[0]?.id ||
+      popsOf(activeProducts, "liquido", true)[0]?.id ||
+      materialProducts[0]?.id ||
+      "";
   const [items, setItems] = useState<ReceiptItem[]>([
     { id: "1", productId: defaultProductId, quantity: "", lot: "" },
   ]);
@@ -505,6 +486,13 @@ export function ReceivingPage() {
                   </div>
                 )}
               </div>
+              <CameraQrButton
+                className="h-12 w-12"
+                onResult={(code) => {
+                  addScannedBox(code);
+                  setScannerInput("");
+                }}
+              />
               <Button type="button" onClick={handleManualAdd} className="h-12 px-6">
                 <Plus className="w-4 h-4 mr-2" />
                 Adicionar
@@ -698,18 +686,14 @@ export function ReceivingPage() {
                           )
                         ) : (
                           <>
-                            {simpleProducts.length > 0 &&
-                              groupByLine(simpleProducts, "SKUs Simples").map((group) => (
-                                <optgroup key={group.label} label={group.label}>
-                                  {group.items.map((p) => (
-                                    <option key={p.id} value={p.id}>
-                                      {skuOptionLabel(p)}
-                                    </option>
-                                  ))}
-                                </optgroup>
-                              ))}
-                            {compositeProducts.length > 0 &&
-                              groupByLine(compositeProducts, "SKUs Compostos").map((group) => (
+                            {[
+                              { label: "SKUs Simples · Congelado", items: popsOf(activeProducts, "congelado", false) },
+                              { label: "SKUs Compostos · Congelado", items: popsOf(activeProducts, "congelado", true) },
+                              { label: "SKUs Simples · Líquido", items: popsOf(activeProducts, "liquido", false) },
+                              { label: "SKUs Compostos · Líquido", items: popsOf(activeProducts, "liquido", true) },
+                            ]
+                              .filter((group) => group.items.length > 0)
+                              .map((group) => (
                                 <optgroup key={group.label} label={group.label}>
                                   {group.items.map((p) => (
                                     <option key={p.id} value={p.id}>

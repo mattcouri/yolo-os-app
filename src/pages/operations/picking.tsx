@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useAppStore } from "@/stores";
+import { ProductMark } from "@/components/product-mark";
 
 export function PickingPage() {
   const {
@@ -66,7 +67,7 @@ export function PickingPage() {
 
     if (existingActive) {
       alert(
-        `Já existe uma caixa de separação para este sabor e estado: ${
+        `Já existe uma caixa de separação para este produto e estado: ${
           getBoxInfo(existingActive.id)?.asset?.code
         }. Encerre-a antes de abrir outra.`
       );
@@ -92,7 +93,7 @@ export function PickingPage() {
       </div>
 
       <div className="bg-muted/50 text-sm rounded-lg p-4 mb-6">
-        Uma caixa de separação por sabor e estado. Caixas parciais de reserva
+        Uma caixa de separação por produto e estado. Caixas parciais de reserva
         continuam no estoque; só a caixa ativa permite retiradas.
       </div>
 
@@ -113,8 +114,7 @@ export function PickingPage() {
                   >
                     <div>
                       <strong className="text-sm">
-                        {info.product?.flavor || info.product?.name} ·{" "}
-                        {s.physical_state === "frozen" ? "Congelado" : "Líquido"}
+                        <ProductMark product={info.product} state={s.physical_state} />
                       </strong>
                       <p className="text-xs text-muted-foreground">
                         {info.asset?.code} · {s.quantity} pops · {s.grade} ·{" "}
@@ -170,8 +170,7 @@ export function PickingPage() {
                   >
                     <div>
                       <strong className="text-sm">
-                        {info.asset?.code} · {info.product?.flavor || info.product?.name}{" "}
-                        · {s.quantity} pops
+                        {info.asset?.code} · <ProductMark product={info.product} /> · {s.quantity} pops
                       </strong>
                       <p className="text-xs text-muted-foreground">
                         {s.physical_state === "frozen" ? "Congelado" : "Líquido"} ·{" "}
@@ -290,7 +289,7 @@ function OpenBoxDialog({
         <div className="space-y-4">
           <p>
             <strong>
-              {asset?.code} · {product.flavor || product.name}
+              {asset?.code} · <ProductMark product={product} />
             </strong>
           </p>
           <p className="text-sm text-muted-foreground">
@@ -299,7 +298,7 @@ function OpenBoxDialog({
             {stockItem.grade} · {location?.name}
           </p>
           <p className="text-sm">
-            Uma caixa ativa por sabor e estado. Nenhuma quantidade será retirada ao
+            Uma caixa ativa por produto e estado. Nenhuma quantidade será retirada ao
             abrir.
           </p>
           <div className="flex justify-end gap-2">
@@ -368,7 +367,7 @@ function WithdrawDialog({
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            {product.flavor || product.name} ·{" "}
+            <ProductMark product={product} /> ·{" "}
             {stockItem.physical_state === "frozen" ? "Congelado" : "Líquido"} · saldo:{" "}
             <strong>{stockItem.quantity} pops</strong>
           </p>
@@ -448,7 +447,7 @@ function CloseBoxDialog({
           </p>
           <p className="text-sm text-muted-foreground">
             Ela deixa de ser a caixa de separação, permitindo abrir outra do mesmo
-            sabor e estado.
+            produto e estado.
           </p>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={onClose}>

@@ -17,6 +17,7 @@ import { AtivosPanel } from "@/pages/settings/ativos-panel";
 import { UniformesPanel } from "@/pages/settings/uniformes-panel";
 import { EmbalagensPanel } from "@/pages/settings/embalagens-panel";
 import { cleanLocation, formatBoxOuterMeasures, isBoxAsset, isUniformAsset } from "@/lib/operational-assets";
+import { ProductMark, productOptionLabel } from "@/components/product-mark";
 import {
   assetYardLocations,
   defaultStoredKinds,
@@ -364,7 +365,7 @@ function CompositionPopover({
       </PopoverTrigger>
       <PopoverContent className="w-80 p-0" align="start">
         <div className="p-3 border-b bg-muted/30">
-          <p className="font-medium text-sm">{product.code} - {product.name}</p>
+          <p className="font-medium text-sm"><ProductMark product={product} /></p>
           <p className="text-xs text-muted-foreground">Composição do produto</p>
         </div>
         <div className="p-2 max-h-80 overflow-y-auto">
@@ -1877,10 +1878,9 @@ export function SettingsPage() {
                           .filter(p => p.id !== productDialog.item?.id)
                           .map(p => {
                             const formatIcon = p.format === "congelado" ? "❄️" : p.format === "liquido" ? "💧" : "";
-                            const linha = p.product_line ? getTypeLabel(productLines, p.product_line) : "";
                             return (
                               <option key={p.id} value={p.id}>
-                                {formatIcon} {p.code} - {p.name} • {linha} ({p.base_quantity || 1} un)
+                                {formatIcon} {productOptionLabel(p)} ({p.base_quantity || 1} un)
                               </option>
                             );
                           })}
@@ -1890,11 +1890,10 @@ export function SettingsPage() {
                           .filter(p => p.id !== productDialog.item?.id)
                           .map(p => {
                             const formatIcon = p.format === "congelado" ? "❄️" : p.format === "liquido" ? "💧" : "";
-                            const linha = p.product_line ? getTypeLabel(productLines, p.product_line) : "";
                             const calcUnits = calculateTotalBaseUnits(p.id);
                             return (
                               <option key={p.id} value={p.id}>
-                                {formatIcon} {p.code} - {p.name} • {linha} ({calcUnits} un)
+                                {formatIcon} {productOptionLabel(p)} ({calcUnits} un)
                               </option>
                             );
                           })}
@@ -1902,7 +1901,7 @@ export function SettingsPage() {
                       <optgroup label="Materiais">
                         {materialProducts.map(p => (
                           <option key={p.id} value={p.id}>
-                            📦 {p.code} - {p.name} • {getTypeLabel(materialTypes, p.category || "")}
+                            📦 {productOptionLabel(p)}
                           </option>
                         ))}
                       </optgroup>
@@ -1948,35 +1947,10 @@ export function SettingsPage() {
                       {productFormData.components.map((comp, idx) => {
                         const product = products.find(p => p.id === comp.product_id);
                         if (!product) return null;
-                        const isMaterial = product.kind === "material";
-                        const isCongelado = product.format === "congelado";
-                        const isLiquido = product.format === "liquido";
                         return (
                           <div key={comp.product_id} className="flex items-center justify-between px-3 py-2 text-sm gap-2">
                             <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
-                              {isMaterial ? (
-                                <Badge variant="secondary" className="text-xs flex-shrink-0">
-                                  📦 Material
-                                </Badge>
-                              ) : (
-                                <Badge 
-                                  variant="secondary" 
-                                  className={`text-xs flex-shrink-0 ${
-                                    isCongelado 
-                                      ? "bg-sky-100 text-sky-700" 
-                                      : isLiquido 
-                                      ? "bg-fuchsia-100 text-fuchsia-700"
-                                      : ""
-                                  }`}
-                                >
-                                  {isCongelado && <Snowflake className="w-3 h-3 mr-1" />}
-                                  {isLiquido && <Droplets className="w-3 h-3 mr-1" />}
-                                  {getTypeLabel(productLines, product.product_line || "")}
-                                </Badge>
-                              )}
-                              <span className="flex-shrink-0">{product.code}</span>
-                              <span className="text-muted-foreground flex-shrink-0">-</span>
-                              <span className="truncate">{product.name}</span>
+                              <ProductMark product={product} />
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
                               <Input

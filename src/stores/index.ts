@@ -49,6 +49,7 @@ import {
 import { checkoutMatchesItem } from '@/lib/ativos-na-rua';
 import {
   closeOutLinesFromUnits,
+  parseCloseOut,
   returnUnitAssetStatus,
   type ReturnUnit,
 } from '@/lib/separacao';
@@ -140,6 +141,8 @@ interface AppState {
   updatePlacedOrder: (orderId: string, data: CreateOrderData) => Promise<Order>;
   cancelPlacedOrder: (orderId: string) => Promise<void>;
   deleteClosedOrder: (orderId: string) => Promise<void>;
+  returnClosedOrder: (orderId: string) => Promise<void>;
+  restoreClosedOrderStock: (orderId: string, reason: string) => Promise<boolean>;
   createInventoryCount: (locationId: string) => Promise<InventoryCount>;
   
   updateStock: (id: string, data: Partial<Stock>) => Promise<void>;
@@ -2584,7 +2587,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               const existingAsset = nextAssets.find((item) => item.id === existing.asset_id);
               if (existing.grade && existing.grade !== grade.grade) {
                 throw new Error(
-                  `A caixa de montagem ${existingAsset?.code || existing.stock_number} é ${existing.grade}. Não crie outro parcial ${grade.grade} — só uma caixa de montagem por sabor e estado.`
+                  `A caixa de montagem ${existingAsset?.code || existing.stock_number} é ${existing.grade}. Não crie outro parcial ${grade.grade} — só uma caixa de montagem por produto e estado.`
                 );
               }
               if (existing.quantity <= 0) {
@@ -3248,10 +3251,143 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
+  restoreClosedOrderStock: async (orderId, reason) => {
+    const existing = get().orders.find((row) => row.id === orderId);
+    if (!existing) throw new Error('Pedido não encontrado.');
+    const close = parseCloseOut(existing.return_description);
+    if (close?.extornado) return false;
+
+    const dispatches = get().movements.filter(
+      (row) => row.order_id === orderId && row.type === 'dispatch' && !row.asset_id && (row.quantity || 0) > 0
+    );
+
+    if (dispatches.length) {
+      for (const move of dispatches) {
+        const qty = move.quantity || 0;
+        if (move.stock_id) {
+          const lot = get().stock.find((row) => row.id === move.stock_id);
+          if (!lot) continue;
+          const next = lot.quantity + qty;
+          await get().updateStock(lot.id, { quantity: next, status: next > 0 ? 'available' : lot.status });
+          await get().createMovement({
+            type: 'return',
+            stock_id: lot.id,
+            order_id: orderId,
+            asset_id: lot.asset_id || undefined,
+            quantity: qty,
+            quantity_before: lot.quantity,
+            quantity_after: next,
+            to_location_id: lot.location_id,
+            reason,
+            notes: move.notes,
+          });
+          continue;
+        }
+        const material = get().products.find(
+          (product) =>
+            product.kind === 'material' &&
+            (product.name === move.notes || close?.sku_deductions?.some((row) => row.product_id === product.id && row.name === move.notes))
+        );
+        const lot = material
+          ? get().materialStock.find((row) => row.product_id === material.id && row.status !== 'blocked')
+          : undefined;
+        if (!material || !lot) continue;
+        const next = lot.quantity + qty;
+        await get().updateMaterialStock(lot.id, { quantity: next, status: 'available' });
+        await get().createMovement({
+          type: 'return',
+          order_id: orderId,
+          quantity: qty,
+          quantity_before: lot.quantity,
+          quantity_after: next,
+          to_location_id: lot.location_id,
+          reason,
+          notes: move.notes,
+        });
+      }
+      return true;
+    }
+
+    const deductions =
+      close?.sku_deductions?.filter((row) => row.quantity > 0) ||
+      get()
+        .orderItems.filter((item) => item.order_id === orderId && item.product_id && !item.asset_id && !item.code.startsWith('UNI-'))
+        .map((item) => ({
+          product_id: item.product_id as string,
+          name: item.name,
+          quantity: item.quantity,
+          unit: item.unit,
+        }));
+
+    for (const row of deductions) {
+      const product = get().products.find((item) => item.id === row.product_id);
+      if (!product || row.quantity <= 0) continue;
+      if (product.kind === 'material') {
+        const lot = get().materialStock.find((item) => item.product_id === product.id && item.status !== 'blocked');
+        if (!lot) continue;
+        const next = lot.quantity + row.quantity;
+        await get().updateMaterialStock(lot.id, { quantity: next, status: 'available' });
+        await get().createMovement({
+          type: 'return',
+          order_id: orderId,
+          quantity: row.quantity,
+          quantity_before: lot.quantity,
+          quantity_after: next,
+          to_location_id: lot.location_id,
+          reason,
+          notes: row.name,
+        });
+        continue;
+      }
+      const wanted = get().orderItems.find((item) => item.order_id === orderId && item.product_id === product.id)?.requested_state;
+      const lot = get().stock.find(
+        (item) =>
+          item.product_id === product.id &&
+          item.status !== 'blocked' &&
+          (!wanted || physicalStateOf(item) === wanted)
+      ) || get().stock.find((item) => item.product_id === product.id);
+      if (!lot) continue;
+      const next = lot.quantity + row.quantity;
+      await get().updateStock(lot.id, { quantity: next, status: next > 0 ? 'available' : lot.status });
+      await get().createMovement({
+        type: 'return',
+        stock_id: lot.id,
+        order_id: orderId,
+        asset_id: lot.asset_id || undefined,
+        quantity: row.quantity,
+        quantity_before: lot.quantity,
+        quantity_after: next,
+        to_location_id: lot.location_id,
+        reason,
+        notes: row.name,
+      });
+    }
+    return true;
+  },
+
+  returnClosedOrder: async (orderId) => {
+    const existing = get().orders.find((row) => row.id === orderId);
+    if (!existing) throw new Error('Pedido não encontrado.');
+    const close = parseCloseOut(existing.return_description);
+    if (close?.extornado) throw new Error('Este pedido já foi extornado.');
+    const now = new Date().toISOString();
+    await get().restoreClosedOrderStock(orderId, `Devolução ${existing.order_number}`);
+    const nextClose = {
+      ...(close || { closed_at: existing.updated_at || now, lines: [] }),
+      extornado: true,
+      extornado_at: now,
+    };
+    await get().updateOrder(orderId, { return_description: JSON.stringify(nextClose) });
+  },
+
   deleteClosedOrder: async (orderId) => {
     const state = get();
     const existing = state.orders.find((row) => row.id === orderId);
     if (!existing) throw new Error('Pedido não encontrado.');
+    const close = parseCloseOut(existing.return_description);
+    if (!close?.extornado) {
+      await get().restoreClosedOrderStock(orderId, `Exclusão ${existing.order_number}`);
+    }
 
     if (isSupabaseConfigured && supabase) {
       const relatedDeletes = [
@@ -4876,7 +5012,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const stock = state.stock.find(s => s.id === boxId);
     if (!stock) throw new Error('Caixa não encontrada.');
     if (!stock.is_active_separation) {
-      throw new Error('Só a caixa de montagem deste sabor e estado pode ter unidades retiradas. Caixas de 100 ficam fechadas na prateleira.');
+      throw new Error('Só a caixa de montagem deste produto e estado pode ter unidades retiradas. Caixas de 100 ficam fechadas na prateleira.');
     }
     if (stock.quantity < quantity) throw new Error('Quantidade insuficiente na caixa de montagem.');
     
@@ -4949,7 +5085,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         );
       }
       throw new Error(
-        `Já existe caixa de montagem para este sabor e estado: ${existingAsset?.code || existing.stock_number}.`
+        `Já existe caixa de montagem para este produto e estado: ${existingAsset?.code || existing.stock_number}.`
       );
     }
     if (isSupabaseConfigured && supabase) {
@@ -5055,7 +5191,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         item.status !== 'analysis'
     );
     if (!incoming) {
-      throw new Error(`${code} não tem produto. Traga a caixa cheia deste sabor.`);
+      throw new Error(`${code} não tem produto. Traga a caixa cheia deste produto.`);
     }
     if (incoming.product_id !== empty.product_id || physicalStateOf(incoming) !== physicalStateOf(empty)) {
       throw new Error(`${code} não é do mesmo produto e estado desta caixa de montagem.`);
@@ -5168,7 +5304,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const boxAsset = box ? state.assets.find((item) => item.id === box.asset_id) : undefined;
         if (!box || box.quantity <= 0) {
           throw new Error(
-            `Abra a caixa de montagem de ${child.flavor || child.name} (${physicalState === 'frozen' ? 'congelado' : 'líquido'}) e traga uma caixa de 100.`
+            `Abra a caixa de montagem de ${child.name || child.code} (${physicalState === 'frozen' ? 'congelado' : 'líquido'}) e traga uma caixa de 100.`
           );
         }
         if (box.quantity < need.quantity) {
@@ -5387,13 +5523,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         const box = findAssemblyBox(nextStock, need.productId, physicalState);
         if (!box) {
           throw new Error(
-            `Abra a caixa de montagem de ${child.flavor || child.name} para receber as unidades desmontadas.`
+            `Abra a caixa de montagem de ${child.name || child.code} para receber as unidades desmontadas.`
           );
         }
         const room = boxCapacity(box, state.assets) - box.quantity;
         if (need.quantity > room) {
           throw new Error(
-            `A caixa de montagem de ${child.flavor || child.name} só cabe mais ${room} un.`
+            `A caixa de montagem de ${child.name || child.code} só cabe mais ${room} un.`
           );
         }
         nextStock = nextStock.map((item) =>

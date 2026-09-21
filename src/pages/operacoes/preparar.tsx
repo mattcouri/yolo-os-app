@@ -62,7 +62,7 @@ export function PrepararPage() {
         <div className="space-y-3">
           {queue.map(({ receipt, items, remaining, declared, counted, variance }) => {
             const names = items
-              .map((item) => products.find((p) => p.id === item.product_id)?.name || products.find((p) => p.id === item.product_id)?.flavor)
+              .map((item) => products.find((p) => p.id === item.product_id)?.name || products.find((p) => p.id === item.product_id)?.code)
               .filter(Boolean)
               .slice(0, 3);
             const boxCount = new Set(
