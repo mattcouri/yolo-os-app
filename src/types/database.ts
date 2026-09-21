@@ -142,6 +142,7 @@ export interface ProductComponent {
 export interface BoxTypeCatalog {
   value: string;
   label: string;
+  photo_url?: string | null;
   sort_order: number;
   created_at: string;
   updated_at: string;

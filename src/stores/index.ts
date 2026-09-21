@@ -115,6 +115,7 @@ interface AppState {
   fetchBoxTypes: () => Promise<void>;
   upsertBoxType: (value: string, label: string) => Promise<BoxTypeCatalog>;
   renameBoxType: (value: string, label: string) => Promise<void>;
+  setBoxTypePhoto: (value: string, photoUrl: string | null) => Promise<void>;
   deleteBoxType: (value: string) => Promise<void>;
   fetchReceipts: () => Promise<void>;
   fetchStock: () => Promise<void>;
@@ -631,9 +632,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   vehicles: [],
   kanbanColumnOrders: {},
   boxTypes: [
-    { value: 'caixa_media', label: 'Caixa Média', sort_order: 1, created_at: '', updated_at: '' },
-    { value: 'caixa_preta', label: 'Caixa Preta', sort_order: 2, created_at: '', updated_at: '' },
-    { value: 'caixa_grande', label: 'Caixa Grande', sort_order: 3, created_at: '', updated_at: '' },
+    { value: 'caixa_preta', label: 'Caixa p/ fábrica', photo_url: null, sort_order: 1, created_at: '', updated_at: '' },
+    { value: 'caixa_grande', label: 'Caixa estoque interno', photo_url: null, sort_order: 2, created_at: '', updated_at: '' },
+    { value: 'caixa_media', label: 'Caixa vazada freezer', photo_url: null, sort_order: 3, created_at: '', updated_at: '' },
   ],
   
   clearError: () => set({ error: null }),
@@ -755,9 +756,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         )
       : [];
     const fallback: BoxTypeCatalog[] = [
-      { value: 'caixa_media', label: 'Caixa Média', sort_order: 1, created_at: '', updated_at: '' },
-      { value: 'caixa_preta', label: 'Caixa Preta', sort_order: 2, created_at: '', updated_at: '' },
-      { value: 'caixa_grande', label: 'Caixa Grande', sort_order: 3, created_at: '', updated_at: '' },
+      { value: 'caixa_preta', label: 'Caixa p/ fábrica', photo_url: null, sort_order: 1, created_at: '', updated_at: '' },
+      { value: 'caixa_grande', label: 'Caixa estoque interno', photo_url: null, sort_order: 2, created_at: '', updated_at: '' },
+      { value: 'caixa_media', label: 'Caixa vazada freezer', photo_url: null, sort_order: 3, created_at: '', updated_at: '' },
     ];
     const merge = (rows: BoxTypeCatalog[]) => {
       const map = new Map<string, BoxTypeCatalog>();
@@ -807,6 +808,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const row: BoxTypeCatalog = {
       value,
       label: label.trim() || value,
+      photo_url: existing?.photo_url ?? null,
       sort_order: existing?.sort_order ?? 20,
       created_at: existing?.created_at || now,
       updated_at: now,
@@ -836,6 +838,39 @@ export const useAppStore = create<AppState>((set, get) => ({
     for (const asset of targets) {
       await get().updateAsset(asset.id, { name: nextLabel });
     }
+  },
+
+  setBoxTypePhoto: async (value, photoUrl) => {
+    const now = new Date().toISOString();
+    if (isSupabaseConfigured && supabase) {
+      const existing = get().boxTypes.find((row) => row.value === value);
+      const { error } = await supabase.from('box_types').upsert(
+        {
+          value,
+          label: existing?.label || value.replace(/_/g, ' '),
+          photo_url: photoUrl,
+          sort_order: existing?.sort_order ?? 20,
+          updated_at: now,
+        },
+        { onConflict: 'value' }
+      );
+      if (error && !/schema cache|does not exist|Could not find the table/i.test(error.message)) {
+        throw new Error(error.message);
+      }
+      const { error: assetError } = await supabase
+        .from('assets')
+        .update({ photo_url: photoUrl, updated_at: now })
+        .eq('type', value);
+      if (assetError) throw new Error(assetError.message);
+    }
+    set((state) => ({
+      boxTypes: state.boxTypes.map((row) =>
+        row.value === value ? { ...row, photo_url: photoUrl, updated_at: now } : row
+      ),
+      assets: state.assets.map((asset) =>
+        isBoxAsset(asset) && asset.type === value ? { ...asset, photo_url: photoUrl, updated_at: now } : asset
+      ),
+    }));
   },
 
   deleteBoxType: async (value) => {

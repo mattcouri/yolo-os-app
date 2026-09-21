@@ -169,6 +169,7 @@ export function EmbalagensPanel() {
     fetchBoxTypes,
     upsertBoxType,
     renameBoxType,
+    setBoxTypePhoto,
     deleteBoxType,
   } = useAppStore();
   const homeLocationId = orderedBoxYardLocations(locations)[0]?.id || "";
@@ -188,6 +189,10 @@ export function EmbalagensPanel() {
 
   const typeLabel = (type: string) =>
     boxTypes.find((option) => option.value === type)?.label || type.replace(/_/g, " ");
+  const typePhoto = (type: string) =>
+    boxTypes.find((option) => option.value === type)?.photo_url ||
+    boxes.find((box) => box.type === type)?.photo_url ||
+    "";
 
   const typeRows = useMemo<BoxTypeRow[]>(() => {
     const groups = new Map<string, Asset[]>();
@@ -209,7 +214,7 @@ export function EmbalagensPanel() {
           description: sample.description || "",
           unit_capacity: sample.unit_capacity ?? null,
           measures: formatBoxOuterMeasures(sample) || "—",
-          photo_url: sample.photo_url || "",
+          photo_url: typePhoto(type) || sample.photo_url || "",
           search: `${label} ${type} ${sorted.map((unit) => unit.code).join(" ")}`.toLowerCase(),
         };
       })
@@ -249,7 +254,7 @@ export function EmbalagensPanel() {
       length_cm: sample?.length_cm != null ? String(sample.length_cm) : "",
       width_cm: sample?.width_cm != null ? String(sample.width_cm) : "",
       height_cm: sample?.height_cm != null ? String(sample.height_cm) : "",
-      photo_url: sample?.photo_url || "",
+      photo_url: typePhoto(seedType) || sample?.photo_url || "",
       location_id: sample?.location_id || homeLocationId,
       autoGenerate: true,
     });
@@ -329,6 +334,7 @@ export function EmbalagensPanel() {
     setCreateBusy(true);
     try {
       await createAssets(codes.map((code) => ({ ...shared, code })));
+      if (form.type) await setBoxTypePhoto(form.type, form.photo_url || null);
       setCreateOpen(false);
       setForm({ ...emptyForm, location_id: homeLocationId });
     } catch (error) {
@@ -353,6 +359,7 @@ export function EmbalagensPanel() {
     }
     try {
       await updateAsset(unitEdit.id, { ...shared, code });
+      if (form.type) await setBoxTypePhoto(form.type, form.photo_url || null);
       setUnitEdit(null);
     } catch (error) {
       alert(error instanceof Error ? error.message : "Não foi possível salvar.");
@@ -459,6 +466,7 @@ export function EmbalagensPanel() {
             form={form}
             setForm={setForm}
             typeOptions={typeOptions}
+            typePhoto={typePhoto}
             onCreateType={async (label) => {
               const value = slugType(label);
               await upsertBoxType(value, label);
@@ -469,6 +477,9 @@ export function EmbalagensPanel() {
             }}
             onDeleteType={async (value) => {
               await deleteBoxType(value);
+            }}
+            onPhotoChange={async (url) => {
+              if (form.type) await setBoxTypePhoto(form.type, url);
             }}
             locations={locations}
             showQuantity
@@ -692,6 +703,7 @@ export function EmbalagensPanel() {
             form={form}
             setForm={setForm}
             typeOptions={typeOptions}
+            typePhoto={typePhoto}
             onCreateType={async (label) => {
               const value = slugType(label);
               await upsertBoxType(value, label);
@@ -702,6 +714,9 @@ export function EmbalagensPanel() {
             }}
             onDeleteType={async (value) => {
               await deleteBoxType(value);
+            }}
+            onPhotoChange={async (url) => {
+              if (form.type) await setBoxTypePhoto(form.type, url);
             }}
             locations={locations}
             showQuantity={false}
@@ -829,18 +844,22 @@ function BoxFormFields({
   form,
   setForm,
   typeOptions,
+  typePhoto,
   onCreateType,
   onRenameType,
   onDeleteType,
+  onPhotoChange,
   locations,
   showQuantity,
 }: {
   form: BoxForm;
   setForm: (next: BoxForm) => void;
   typeOptions: SelectOption[];
+  typePhoto: (type: string) => string;
   onCreateType: (label: string) => Promise<string>;
   onRenameType: (value: string, label: string) => Promise<void>;
   onDeleteType: (value: string) => Promise<void>;
+  onPhotoChange: (url: string | null) => Promise<void>;
   locations: Location[];
   showQuantity: boolean;
 }) {
@@ -853,20 +872,26 @@ function BoxFormFields({
             try {
               const url = await uploadBoxPhoto(file);
               setForm({ ...form, photo_url: url });
+              await onPhotoChange(url);
             } catch (error) {
               alert(error instanceof Error ? error.message : "Não foi possível enviar a foto.");
             }
           }}
-          onClear={() => setForm({ ...form, photo_url: "" })}
+          onClear={() => {
+            setForm({ ...form, photo_url: "" });
+            void onPhotoChange(null);
+          }}
         />
-        <p className="pt-2 text-xs text-muted-foreground">Foto do tipo, usada nas unidades criadas agora.</p>
+        <p className="pt-2 text-xs text-muted-foreground">
+          Uma foto por tipo: vale para todas as unidades deste cadastro.
+        </p>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-2">
           <Label className="text-sm">Tipo</Label>
           <CreatableSelect
             value={form.type}
-            onChange={(value) => setForm({ ...form, type: value })}
+            onChange={(value) => setForm({ ...form, type: value, photo_url: typePhoto(value) })}
             options={typeOptions}
             onCreateOption={async (label) => {
               try {
